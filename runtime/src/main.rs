@@ -241,13 +241,14 @@ When done, output: TASK_COMPLETE: <result>"#;
             let response = client.post(format!("{}/api/chat", self.ollama_url))
                 .json(&request).send().await?;
             
-            let result: serde_json::Value = response.json().await;
+            let result = response.json::<serde_json::Value>().await?;
             let content = result["message"]["content"].as_str().unwrap_or("");
-            let tool_calls = result["message"]["tool_calls"].as_array();
+            let tool_calls_opt = result["message"]["tool_calls"].as_array();
 
-            if let Some(calls) = tool_calls {
-                if !calls.is_empty() {
-                    for call in calls {
+            if let Some(calls) = tool_calls_opt {
+                let calls_arr: &Vec<serde_json::Value> = calls;
+                if calls_arr.len() > 0 {
+                    for call in calls_arr {
                         let tool_name = call["function"]["name"].as_str().unwrap_or("");
                         let args_str = call["function"]["arguments"].to_string();
                         
@@ -439,9 +440,12 @@ async fn add_task(State(state): State<Arc<AgentOsState>>, Json(req): Json<TaskRe
     }
 }
 
-async fn get_task(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Option<Uuid>>> {
+async fn get_task(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Uuid>> {
     let mut queue = state.task_queue.write().await;
-    Json(ApiResponse { success: true, data: queue.pop(), error: None })
+    match queue.pop() {
+        Some(id) => Json(ApiResponse { success: true, data: Some(id), error: None }),
+        None => Json(ApiResponse { success: false, data: None, error: Some("No tasks".to_string()) })
+    }
 }
 
 async fn list_tasks(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Vec<Task>>> {
