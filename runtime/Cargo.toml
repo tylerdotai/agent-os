@@ -3,7 +3,7 @@ name = "agent-os"
 version = "0.1.0"
 edition = "2021"
 authors = ["Tyler Delano <tyler@tylerdelano.com>"]
-description = "An operating system designed specifically for autonomous AI agents"
+description = "An operating system for autonomous AI agents"
 license = "MIT"
 
 [dependencies]
@@ -15,10 +15,8 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1"
-thiserror = "1"
 axum = "0.7"
 reqwest = { version = "0.12", features = ["json"] }
 
 [features]
 default = []
-unikernel = []
