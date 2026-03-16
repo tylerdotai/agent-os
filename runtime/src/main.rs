@@ -1,6 +1,6 @@
-//! Agent OS - Autonomous Agent Runtime
+//! Agent OS - Operating System for Autonomous AI Agents
 //!
-//! The core loop: receive tasks → reason with tools → execute → report
+//! Built for agents to consume programmatically.
 
 use anyhow::Result;
 use axum::{
@@ -29,45 +29,14 @@ pub struct Agent {
     pub created_at: DateTime<Utc>,
     pub system_prompt: String,
     pub context: Vec<Message>,
-    pub permissions: Permissions,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Permissions {
-    pub can_spawn_agents: bool,
-    pub can_access_network: bool,
-    pub can_access_filesystem: bool,
-    pub can_execute_commands: bool,
-}
-
-impl Default for Permissions {
-    fn default() -> Self {
-        Self {
-            can_spawn_agents: true,
-            can_access_network: true,
-            can_access_filesystem: true,
-            can_execute_commands: true,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub role: String,      // system, user, assistant, tool
+    pub role: String,
     pub content: String,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
-}
-
-// Agent-to-agent message type
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentMessage {
-    pub id: Uuid,
-    pub from_agent: Uuid,
-    pub to_agent: Uuid,
-    pub content: String,
-    pub timestamp: DateTime<Utc>,
-    pub read: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,27 +44,26 @@ pub struct Tool {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
-    pub category: ToolCategory,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ToolCategory {
-    Filesystem,
-    Network,
-    Execution,
-    Messaging,
-    Custom,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: Uuid,
     pub description: String,
-    pub status: String,  // pending, processing, completed, failed
+    pub status: String,
     pub result: Option<String>,
     pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessage {
+    pub id: Uuid,
+    pub from_agent: Uuid,
+    pub to_agent: Uuid,
+    pub content: String,
+    pub timestamp: DateTime<Utc>,
 }
 
 // ============================================================================
@@ -107,7 +75,7 @@ pub struct AgentOsState {
     pub tasks: Arc<TokioRwLock<HashMap<Uuid, Task>>>,
     pub task_queue: Arc<TokioRwLock<Vec<Uuid>>>,
     pub tools: Arc<TokioRwLock<HashMap<String, Tool>>>,
-    pub agent_mailbox: Arc<TokioRwLock<HashMap<Uuid, Vec<AgentMessage>>>>,  // Message queue per agent
+    pub messages: Arc<TokioRwLock<Vec<AgentMessage>>>,
     pub ollama_url: String,
     pub model: String,
     pub storage_path: PathBuf,
@@ -116,21 +84,8 @@ pub struct AgentOsState {
 
 impl AgentOsState {
     pub fn new(ollama_url: &str, model: &str, storage_path: PathBuf) -> Self {
-        let system_prompt = r#"You are an autonomous AI agent running on Agent OS.
-
-Your job is to:
-1. Receive tasks from the queue
-2. Reason about what needs to be done
-3. Use tools to accomplish tasks
-4. Report results
-
-Available tools:
-- Use tools whenever you need to get information or perform actions
-- After using a tool, you will get the result
-- Based on results, decide the next step
-- When task is complete, say "TASK_COMPLETE: <result>"
-
-Be precise. Be efficient. Use tools proactively."#;
+        let system_prompt = r#"You are an autonomous AI agent. Complete tasks using tools. 
+When done, output: TASK_COMPLETE: <result>"#;
 
         let init_agent = Agent {
             id: Uuid::new_v4(),
@@ -144,16 +99,14 @@ Be precise. Be efficient. Use tools proactively."#;
                 tool_call_id: None,
                 tool_name: None,
             }],
-            permissions: Permissions::default(),
         };
         
         let agents = Arc::new(TokioRwLock::new(HashMap::new()));
         let tasks = Arc::new(TokioRwLock::new(HashMap::new()));
         let task_queue = Arc::new(TokioRwLock::new(Vec::new()));
         let tools = Arc::new(TokioRwLock::new(HashMap::new()));
-        let agent_mailbox = Arc::new(TokioRwLock::new(HashMap::new()));
+        let messages = Arc::new(TokioRwLock::new(Vec::new()));
 
-        // Spawn init agent
         let agents_clone = agents.clone();
         tokio::spawn(async move {
             let mut agents = agents_clone.write().await;
@@ -165,7 +118,7 @@ Be precise. Be efficient. Use tools proactively."#;
             tasks,
             task_queue,
             tools,
-            agent_mailbox,
+            messages,
             ollama_url: ollama_url.to_string(),
             model: model.to_string(),
             storage_path,
@@ -178,130 +131,76 @@ Be precise. Be efficient. Use tools proactively."#;
         
         tools.insert("get_time".to_string(), Tool {
             name: "get_time".to_string(),
-            description: "Get current date and time".to_string(),
+            description: "Get current timestamp".to_string(),
             parameters: serde_json::json!({}),
-            category: ToolCategory::Custom,
         });
 
         tools.insert("list_directory".to_string(), Tool {
             name: "list_directory".to_string(),
-            description: "List files in a directory".to_string(),
+            description: "List files in directory".to_string(),
             parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "default": "."}
-                }
+                "properties": {"path": {"type": "string", "default": "."}}
             }),
-            category: ToolCategory::Filesystem,
         });
 
         tools.insert("read_file".to_string(), Tool {
             name: "read_file".to_string(),
-            description: "Read a file".to_string(),
+            description: "Read file contents".to_string(),
             parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"}
-                },
+                "properties": {"path": {"type": "string"}},
                 "required": ["path"]
             }),
-            category: ToolCategory::Filesystem,
         });
 
         tools.insert("http_get".to_string(), Tool {
             name: "http_get".to_string(),
-            description: "Make HTTP GET request".to_string(),
+            description: "Fetch URL content".to_string(),
             parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string"}
-                },
+                "properties": {"url": {"type": "string"}},
                 "required": ["url"]
             }),
-            category: ToolCategory::Network,
         });
 
         tools.insert("search_web".to_string(), Tool {
             name: "search_web".to_string(),
-            description: "Search the web".to_string(),
+            description: "Search via SearXNG".to_string(),
             parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"}
-                },
+                "properties": {"query": {"type": "string"}},
                 "required": ["query"]
             }),
-            category: ToolCategory::Network,
         });
 
         tools.insert("execute_command".to_string(), Tool {
             name: "execute_command".to_string(),
-            description: "Execute a shell command".to_string(),
+            description: "Run shell command".to_string(),
             parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string"}
-                },
+                "properties": {"command": {"type": "string"}},
                 "required": ["command"]
             }),
-            category: ToolCategory::Execution,
         });
-
-        tools.insert("write_file".to_string(), Tool {
-            name: "write_file".to_string(),
-            description: "Write content to a file".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"}
-                },
-                "required": ["path", "content"]
-            }),
-            category: ToolCategory::Filesystem,
-        });
-
-        // Agent messaging tools
-        tools.insert("send_message".to_string(), Tool {
-            name: "send_message".to_string(),
-            description: "Send a message to another agent".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "to_agent": {"type": "string", "description": "UUID of the target agent"},
-                    "content": {"type": "string", "description": "Message content"}
-                },
-                "required": ["to_agent", "content"]
-            }),
-            category: ToolCategory::Messaging,
-        });
-
-        tools.insert("get_messages".to_string(), Tool {
-            name: "get_messages".to_string(),
-            description: "Get pending messages for this agent".to_string(),
-            parameters: serde_json::json!({}),
-            category: ToolCategory::Messaging,
-        });
-
-        tools.insert("list_agents".to_string(), Tool {
-            name: "list_agents".to_string(),
-            description: "List all active agents".to_string(),
-            parameters: serde_json::json!({}),
-            category: ToolCategory::Messaging,
-        });
-
+        
         tools.insert("spawn_agent".to_string(), Tool {
             name: "spawn_agent".to_string(),
-            description: "Spawn a new child agent".to_string(),
+            description: "Spawn a child agent".to_string(),
             parameters: serde_json::json!({
-                "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Name for the new agent"},
-                    "system_prompt": {"type": "string", "description": "System prompt for the agent"}
+                    "name": {"type": "string"},
+                    "system_prompt": {"type": "string"}
                 },
                 "required": ["name"]
             }),
-            category: ToolCategory::Custom,
+        });
+        
+        tools.insert("send_message".to_string(), Tool {
+            name: "send_message".to_string(),
+            description: "Send message to another agent".to_string(),
+            parameters: serde_json::json!({
+                "properties": {
+                    "to_agent": {"type": "string"},
+                    "content": {"type": "string"}
+                },
+                "required": ["to_agent", "content"]
+            }),
         });
     }
 
@@ -310,7 +209,6 @@ Be precise. Be efficient. Use tools proactively."#;
         let agent = agents.get_mut(&agent_id)
             .ok_or_else(|| anyhow::anyhow!("Agent not found"))?;
         
-        // Add task as user message
         agent.context.push(Message {
             role: "user".to_string(),
             content: task.to_string(),
@@ -319,33 +217,19 @@ Be precise. Be efficient. Use tools proactively."#;
         });
 
         for _turn in 0..max_turns {
-            // Build messages for Ollama
             let messages: Vec<serde_json::Value> = agent.context.iter().map(|m| {
-                let mut msg = serde_json::json!({
-                    "role": m.role,
-                    "content": m.content
-                });
-                if let Some(tool_name) = &m.tool_name {
-                    msg["tool_name"] = serde_json::json!(tool_name);
-                }
-                msg
+                serde_json::json!({"role": m.role, "content": m.content})
             }).collect();
 
-            // Get available tools
             let tools = self.tools.read().await;
             let tools_json: Vec<serde_json::Value> = tools.values().map(|t| {
                 serde_json::json!({
                     "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters
-                    }
+                    "function": {"name": t.name, "description": t.description, "parameters": t.parameters}
                 })
             }).collect();
             drop(tools);
 
-            // Call Ollama
             let client = reqwest::Client::new();
             let request = serde_json::json!({
                 "model": self.model,
@@ -355,23 +239,18 @@ Be precise. Be efficient. Use tools proactively."#;
             });
             
             let response = client.post(format!("{}/api/chat", self.ollama_url))
-                .json(&request)
-                .send()
-                .await?;
+                .json(&request).send().await?;
             
-            let result: serde_json::Value = response.json().await?;
-            
+            let result: serde_json::Value = response.json().await;
             let content = result["message"]["content"].as_str().unwrap_or("");
-            let tool_calls_opt = result["message"]["tool_calls"].as_array();
-            
-            if let Some(calls) = tool_calls_opt {
+            let tool_calls = result["message"]["tool_calls"].as_array();
+
+            if let Some(calls) = tool_calls {
                 if !calls.is_empty() {
-                    // Tool call(s) detected
                     for call in calls {
                         let tool_name = call["function"]["name"].as_str().unwrap_or("");
                         let args_str = call["function"]["arguments"].to_string();
                         
-                        // Add assistant message with tool call
                         agent.context.push(Message {
                             role: "assistant".to_string(),
                             content: format!("Using tool: {}", tool_name),
@@ -379,10 +258,7 @@ Be precise. Be efficient. Use tools proactively."#;
                             tool_name: Some(tool_name.to_string()),
                         });
                         
-                        // Execute tool with agent's permissions
-                        let tool_result = self.execute_tool(tool_name, &args_str, Some(&agent.permissions)).await;
-                        
-                        // Add tool result as message
+                        let tool_result = self.execute_tool(tool_name, &args_str).await;
                         let result_str = match tool_result {
                             Ok(r) => r.to_string(),
                             Err(e) => format!("Error: {}", e),
@@ -395,95 +271,28 @@ Be precise. Be efficient. Use tools proactively."#;
                             tool_name: Some(tool_name.to_string()),
                         });
                     }
-                    
-                    // Continue loop to let model see tool results
                     continue;
                 }
             }
             
-            // No tool calls - this is the final response
-            let final_response = content.to_string();
-            
-            // Check for TASK_COMPLETE
-            if final_response.contains("TASK_COMPLETE:") {
-                agent.context.push(Message {
-                    role: "assistant".to_string(),
-                    content: final_response.clone(),
-                    tool_call_id: None,
-                    tool_name: None,
-                });
-                return Ok(final_response);
-            }
-            
-            // Check if model is done (no more tool calls in response)
-            if content.trim().is_empty() || !content.contains("tool") {
-                agent.context.push(Message {
-                    role: "assistant".to_string(),
-                    content: final_response.clone(),
-                    tool_call_id: None,
-                    tool_name: None,
-                });
-                return Ok(final_response);
-            }
-            
-            // Add the response and continue
             agent.context.push(Message {
                 role: "assistant".to_string(),
-                content: final_response.clone(),
+                content: content.to_string(),
                 tool_call_id: None,
                 tool_name: None,
             });
+            
+            return Ok(content.to_string());
         }
         
         Ok("Max turns reached".to_string())
     }
 
-    /// Check if agent has permission to use a tool
-    pub fn check_tool_permission(&self, tool_name: &str, permissions: &Permissions) -> Result<()> {
-        // Map tools to required permissions
-        let required_permission = match tool_name {
-            "list_directory" | "read_file" | "write_file" => {
-                if !permissions.can_access_filesystem {
-                    return Err(anyhow::anyhow!("Permission denied: filesystem access not allowed"));
-                }
-                return Ok(());
-            }
-            "http_get" | "search_web" => {
-                if !permissions.can_access_network {
-                    return Err(anyhow::anyhow!("Permission denied: network access not allowed"));
-                }
-                return Ok(());
-            }
-            "execute_command" => {
-                if !permissions.can_execute_commands {
-                    return Err(anyhow::anyhow!("Permission denied: command execution not allowed"));
-                }
-                return Ok(());
-            }
-            "spawn_agent" => {
-                if !permissions.can_spawn_agents {
-                    return Err(anyhow::anyhow!("Permission denied: agent spawning not allowed"));
-                }
-                return Ok(());
-            }
-            _ => return Ok(()), // Custom tools allowed by default
-        };
-        Ok(())
-    }
-
-    pub async fn execute_tool(&self, tool_name: &str, args: &str, permissions: Option<&Permissions>) -> Result<serde_json::Value> {
-        // Check permissions if provided
-        if let Some(perms) = permissions {
-            self.check_tool_permission(tool_name, perms)?;
-        }
-        
-        let params: serde_json::Value = serde_json::from_str(args)
-            .unwrap_or(serde_json::json!({}));
+    pub async fn execute_tool(&self, tool_name: &str, args: &str) -> Result<serde_json::Value> {
+        let params: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::json!({}));
         
         match tool_name {
-            "get_time" => {
-                Ok(serde_json::json!({"time": Utc::now().to_rfc3339()}))
-            }
+            "get_time" => Ok(serde_json::json!({"time": Utc::now().to_rfc3339()})),
             "list_directory" => {
                 let path = params["path"].as_str().unwrap_or(".");
                 let mut entries = tokio::fs::read_dir(path).await?;
@@ -502,138 +311,49 @@ Be precise. Be efficient. Use tools proactively."#;
                 let url = params["url"].as_str().unwrap_or("");
                 let client = reqwest::Client::new();
                 let resp = client.get(url).send().await?;
-                let text = resp.text().await?;
-                Ok(serde_json::json!({"body": text.chars().take(1000).collect::<String>()}))
+                Ok(serde_json::json!({"body": resp.text().await?}))
             }
             "search_web" => {
                 let query = params["query"].as_str().unwrap_or("");
                 let client = reqwest::Client::new();
-                let url = format!("http://192.168.0.247:18080/search?q={}", 
-                    urlencoding::encode(query));
+                let url = format!("http://192.168.0.247:18080/search?q={}", urlencoding::encode(query));
                 let resp = client.get(&url).send().await?;
-                let text = resp.text().await?;
-                Ok(serde_json::json!({"results": text.chars().take(1500).collect::<String>()}))
+                Ok(serde_json::json!({"results": resp.text().await?}))
             }
             "execute_command" => {
                 let cmd = params["command"].as_str().unwrap_or("");
-                let output = tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(cmd)
-                    .output()
-                    .await?;
-                Ok(serde_json::json!({
-                    "stdout": String::from_utf8_lossy(&output.stdout),
-                    "stderr": String::from_utf8_lossy(&output.stderr),
-                    "code": output.status.code()
-                }))
-            }
-            "write_file" => {
-                let path = params["path"].as_str().unwrap_or("");
-                let content = params["content"].as_str().unwrap_or("");
-                tokio::fs::write(path, content).await?;
-                Ok(serde_json::json!({"success": true, "path": path}))
-            }
-            // Agent messaging tools
-            "send_message" => {
-                let to_agent_str = params["to_agent"].as_str().unwrap_or("");
-                let content = params["content"].as_str().unwrap_or("");
-                
-                let to_agent: Uuid = to_agent_str.parse()
-                    .map_err(|_| anyhow::anyhow!("Invalid agent UUID"))?;
-                
-                // Get the sender (first agent for now)
-                let from_agent = {
-                    let agents = self.agents.read().await;
-                    agents.keys().next().cloned()
-                };
-                
-                if let Some(from) = from_agent {
-                    let msg = AgentMessage {
-                        id: Uuid::new_v4(),
-                        from_agent: from,
-                        to_agent,
-                        content: content.to_string(),
-                        timestamp: Utc::now(),
-                        read: false,
-                    };
-                    
-                    let mut mailbox = self.agent_mailbox.write().await;
-                    mailbox.entry(to_agent).or_insert_with(Vec::new).push(msg);
-                    
-                    Ok(serde_json::json!({"success": true, "message": "Message sent"}))
-                } else {
-                    Ok(serde_json::json!({"error": "No sender agent"}))
-                }
-            }
-            "get_messages" => {
-                // Get messages for the first agent
-                let agent_id = {
-                    let agents = self.agents.read().await;
-                    agents.keys().next().cloned()
-                };
-                
-                if let Some(id) = agent_id {
-                    let mut mailbox = self.agent_mailbox.write().await;
-                    let messages = mailbox.entry(id).or_insert_with(Vec::new);
-                    
-                    // Mark messages as read
-                    for msg in messages.iter_mut() {
-                        msg.read = true;
-                    }
-                    
-                    let result: Vec<serde_json::Value> = messages.iter().map(|m| {
-                        serde_json::json!({
-                            "id": m.id,
-                            "from": m.from_agent,
-                            "content": m.content,
-                            "timestamp": m.timestamp
-                        })
-                    }).collect();
-                    
-                    // Clear read messages
-                    messages.retain(|m| !m.read);
-                    
-                    Ok(serde_json::json!({"messages": result}))
-                } else {
-                    Ok(serde_json::json!({"messages": []}))
-                }
-            }
-            "list_agents" => {
-                let agents = self.agents.read().await;
-                let list: Vec<serde_json::Value> = agents.values().map(|a| {
-                    serde_json::json!({
-                        "id": a.id,
-                        "name": a.name,
-                        "created_at": a.created_at
-                    })
-                }).collect();
-                Ok(serde_json::json!({"agents": list}))
+                let output = tokio::process::Command::new("sh").arg("-c").arg(cmd).output().await?;
+                Ok(serde_json::json!({"stdout": String::from_utf8_lossy(&output.stdout), "stderr": String::from_utf8_lossy(&output.stderr)}))
             }
             "spawn_agent" => {
-                let name = params["name"].as_str().unwrap_or("new-agent");
-                let system_prompt = params["system_prompt"].as_str()
-                    .unwrap_or("You are an autonomous AI agent.");
-                
-                let new_agent = Agent {
+                let name = params["name"].as_str().unwrap_or("child");
+                let prompt = params["system_prompt"].as_str().unwrap_or("You are an agent.");
+                let agent = Agent {
                     id: Uuid::new_v4(),
                     name: name.to_string(),
                     parent_id: None,
                     created_at: Utc::now(),
-                    system_prompt: system_prompt.to_string(),
-                    context: vec![Message {
-                        role: "system".to_string(),
-                        content: system_prompt.to_string(),
-                        tool_call_id: None,
-                        tool_name: None,
-                    }],
-                    permissions: Permissions::default(),
+                    system_prompt: prompt.to_string(),
+                    context: vec![Message { role: "system".to_string(), content: prompt.to_string(), tool_call_id: None, tool_name: None }],
                 };
-                
-                let agent_id = new_agent.id;
+                let id = agent.id;
                 let mut agents = self.agents.write().await;
-                agents.insert(agent_id, new_agent);
-                
-                Ok(serde_json::json!({"success": true, "agent_id": agent_id}))
+                agents.insert(id, agent);
+                Ok(serde_json::json!({"agent_id": id, "name": name}))
+            }
+            "send_message" => {
+                let to = params["to_agent"].as_str().unwrap_or("");
+                let content = params["content"].as_str().unwrap_or("");
+                let msg = AgentMessage {
+                    id: Uuid::new_v4(),
+                    from_agent: Uuid::new_v4(),
+                    to_agent: Uuid::parse_str(to).unwrap_or(Uuid::new_v4()),
+                    content: content.to_string(),
+                    timestamp: Utc::now(),
+                };
+                let mut messages = self.messages.write().await;
+                messages.push(msg);
+                Ok(serde_json::json!({"sent": true}))
             }
             _ => Ok(serde_json::json!({"error": "Unknown tool"}))
         }
@@ -651,7 +371,6 @@ Be precise. Be efficient. Use tools proactively."#;
         };
         
         let task_id = task.id;
-        
         let mut tasks = self.tasks.write().await;
         tasks.insert(task_id, task);
         
@@ -660,177 +379,6 @@ Be precise. Be efficient. Use tools proactively."#;
         
         Ok(task_id)
     }
-
-    pub async fn get_next_task(&self) -> Option<Uuid> {
-        let mut queue = self.task_queue.write().await;
-        queue.pop()
-    }
-
-    pub async fn update_task_status(&self, task_id: Uuid, status: &str, result: Option<String>, error: Option<String>) {
-        let mut tasks = self.tasks.write().await;
-        if let Some(task) = tasks.get_mut(&task_id) {
-            task.status = status.to_string();
-            task.result = result;
-            task.error = error;
-            if status == "completed" || status == "failed" {
-                task.completed_at = Some(Utc::now());
-            }
-        }
-    }
-
-    pub async fn start_autonomous_loop(&self, agent_id: Uuid) {
-        self.running.fetch_add(1, Ordering::Relaxed);
-        
-        let running = self.running.clone();
-        let state = Arc::new(()) as Arc<()>; // Placeholder for state clone
-        
-        // Clone all needed state
-        let tasks = self.tasks.clone();
-        let task_queue = self.task_queue.clone();
-        let ollama_url = self.ollama_url.clone();
-        let model = self.model.clone();
-        let tools = self.tools.clone();
-        
-        // Need to clone agents too
-        let agents = self.agents.clone();
-        
-        tracing::info!("Autonomous loop started");
-        
-        // Main autonomous loop
-        while running.load(Ordering::Relaxed) > 0 {
-            // Get next task from queue
-            let task_id = {
-                let mut queue = task_queue.write().await;
-                queue.pop()
-            };
-            
-            if let Some(id) = task_id {
-                tracing::info!("Processing task: {}", id);
-                
-                // Update status to processing
-                {
-                    let mut t = tasks.write().await;
-                    if let Some(task) = t.get_mut(&id) {
-                        task.status = "processing".to_string();
-                    }
-                }
-                
-                // Get the task description
-                let description = {
-                    let t = tasks.read().await;
-                    t.get(&id).map(|task| task.description.clone())
-                };
-                
-                if let Some(desc) = description {
-                    // Get agent and process
-                    let agent_exists = {
-                        let agents_read = agents.read().await;
-                        agents_read.contains_key(&agent_id)
-                    };
-                    
-                    if agent_exists {
-                        // Call think_with_tools - this needs self reference
-                        // We'll do the thinking inline here
-                        let result = self.think_with_tools(agent_id, &desc, 10).await;
-                        
-                        // Update task with result
-                        let mut t = tasks.write().await;
-                        if let Some(task) = t.get_mut(&id) {
-                            match result {
-                                Ok(r) => {
-                                    task.status = "completed".to_string();
-                                    task.result = Some(r);
-                                }
-                                Err(e) => {
-                                    task.status = "failed".to_string();
-                                    task.error = Some(e.to_string());
-                                }
-                            }
-                            task.completed_at = Some(Utc::now());
-                        }
-                    }
-                }
-            } else {
-                // No tasks - sleep briefly to avoid busy loop
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            }
-        }
-        
-        tracing::info!("Autonomous loop stopped");
-    }
-
-    pub async fn stop_autonomous_loop(&self) {
-        self.running.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    // ============================================================================
-    // Persistence: Checkpoint & Restore
-    // ============================================================================
-
-    pub async fn save_state(&self) -> Result<()> {
-        let storage = &self.storage_path;
-        
-        // Save agents
-        let agents = self.agents.read().await;
-        let agents_path = storage.join("agents.json");
-        let agents_data = serde_json::to_string_pretty(&*agents)?;
-        tokio::fs::write(&agents_path, agents_data).await?;
-        tracing::info!("Saved {} agents to {:?}", agents.len(), agents_path);
-        drop(agents);
-        
-        // Save tasks
-        let tasks = self.tasks.read().await;
-        let tasks_path = storage.join("tasks.json");
-        let tasks_data = serde_json::to_string_pretty(&*tasks)?;
-        tokio::fs::write(&tasks_path, tasks_data).await?;
-        tracing::info!("Saved {} tasks to {:?}", tasks.len(), tasks_path);
-        drop(tasks);
-        
-        // Save task queue
-        let queue = self.task_queue.read().await;
-        let queue_path = storage.join("queue.json");
-        let queue_data = serde_json::to_string_pretty(&*queue)?;
-        tokio::fs::write(&queue_path, queue_data).await?;
-        tracing::info!("Saved queue to {:?}", queue_path);
-        
-        Ok(())
-    }
-
-    pub async fn load_state(&self) -> Result<()> {
-        let storage = &self.storage_path;
-        
-        // Load agents
-        let agents_path = storage.join("agents.json");
-        if agents_path.exists() {
-            let data = tokio::fs::read_to_string(&agents_path).await?;
-            let loaded: HashMap<Uuid, Agent> = serde_json::from_str(&data)?;
-            let mut agents = self.agents.write().await;
-            *agents = loaded;
-            tracing::info!("Loaded {} agents from {:?}", agents.len(), agents_path);
-        }
-        
-        // Load tasks
-        let tasks_path = storage.join("tasks.json");
-        if tasks_path.exists() {
-            let data = tokio::fs::read_to_string(&tasks_path).await?;
-            let loaded: HashMap<Uuid, Task> = serde_json::from_str(&data)?;
-            let mut tasks = self.tasks.write().await;
-            *tasks = loaded;
-            tracing::info!("Loaded {} tasks from {:?}", tasks.len(), tasks_path);
-        }
-        
-        // Load queue
-        let queue_path = storage.join("queue.json");
-        if queue_path.exists() {
-            let data = tokio::fs::read_to_string(&queue_path).await?;
-            let loaded: Vec<Uuid> = serde_json::from_str(&data)?;
-            let mut queue = self.task_queue.write().await;
-            *queue = loaded;
-            tracing::info!("Loaded queue from {:?}", queue_path);
-        }
-        
-        Ok(())
-    }
 }
 
 // ============================================================================
@@ -838,44 +386,52 @@ Be precise. Be efficient. Use tools proactively."#;
 // ============================================================================
 mod urlencoding {
     pub fn encode(s: &str) -> String {
-        let mut result = String::new();
-        for c in s.chars() {
-            match c {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => result.push(c),
-                ' ' => result.push_str("%20"),
-                _ => {
-                    for b in c.to_string().as_bytes() {
-                        result.push_str(&format!("%{:02X}", b));
-                    }
-                }
-            }
-        }
-        result
+        s.chars().map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            ' ' => "%20".to_string(),
+            _ => format!("%{:02X}", c as u8),
+        }).collect()
     }
 }
 
 // ============================================================================
-// HTTP Handlers
+// HTTP API (Agent-focused)
 // ============================================================================
 
 #[derive(Serialize)]
-struct ApiResponse<T> {
-    success: bool,
-    data: Option<T>,
-    error: Option<String>,
-}
+struct ApiResponse<T> { success: bool, data: Option<T>, error: Option<String> }
 
 #[derive(Deserialize)]
-struct TaskRequest {
-    description: String,
-}
+struct TaskRequest { description: String }
 
 #[derive(Deserialize)]
-struct ThinkRequest {
-    prompt: String,
-    max_turns: Option<usize>,
+struct ThinkRequest { prompt: String, max_turns: Option<usize> }
+
+#[derive(Deserialize)]
+struct SpawnRequest { name: String, system_prompt: Option<String> }
+
+// Agent management
+async fn list_agents(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Vec<Agent>>> {
+    let agents = state.agents.read().await;
+    Json(ApiResponse { success: true, data: Some(agents.values().cloned().collect()), error: None })
 }
 
+async fn spawn_agent(State(state): State<Arc<AgentOsState>>, Json(req): Json<SpawnRequest>) -> Json<ApiResponse<Uuid>> {
+    let prompt = req.system_prompt.unwrap_or_else(|| "You are an agent.".to_string());
+    let agent = Agent {
+        id: Uuid::new_v4(),
+        name: req.name,
+        parent_id: None,
+        created_at: Utc::now(),
+        system_prompt: prompt.clone(),
+        context: vec![Message { role: "system".to_string(), content: prompt, tool_call_id: None, tool_name: None }],
+    };
+    let id = agent.id;
+    state.agents.write().await.insert(id, agent);
+    Json(ApiResponse { success: true, data: Some(id), error: None })
+}
+
+// Task queue
 async fn add_task(State(state): State<Arc<AgentOsState>>, Json(req): Json<TaskRequest>) -> Json<ApiResponse<Uuid>> {
     match state.add_task(req.description).await {
         Ok(id) => Json(ApiResponse { success: true, data: Some(id), error: None }),
@@ -883,11 +439,17 @@ async fn add_task(State(state): State<Arc<AgentOsState>>, Json(req): Json<TaskRe
     }
 }
 
-async fn get_next_task(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Option<Uuid>>> {
-    let task_id = state.get_next_task().await;
-    Json(ApiResponse { success: true, data: Some(task_id), error: None })
+async fn get_task(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Option<Uuid>>> {
+    let mut queue = state.task_queue.write().await;
+    Json(ApiResponse { success: true, data: queue.pop(), error: None })
 }
 
+async fn list_tasks(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Vec<Task>>> {
+    let tasks = state.tasks.read().await;
+    Json(ApiResponse { success: true, data: Some(tasks.values().cloned().collect()), error: None })
+}
+
+// Thinking
 async fn think(State(state): State<Arc<AgentOsState>>, Json(req): Json<ThinkRequest>) -> Json<ApiResponse<String>> {
     let agents = state.agents.read().await;
     let init_id = agents.keys().next().cloned();
@@ -903,23 +465,11 @@ async fn think(State(state): State<Arc<AgentOsState>>, Json(req): Json<ThinkRequ
     }
 }
 
+// Tool execution
 async fn execute_tool(State(state): State<Arc<AgentOsState>>, Json(req): Json<serde_json::Value>) -> Json<ApiResponse<serde_json::Value>> {
     let tool_name = req["tool"].as_str().unwrap_or("");
     let args = req["parameters"].to_string();
-    
-    // Extract optional permissions from request
-    let permissions = if req.get("permissions").is_some() {
-        Some(Permissions {
-            can_spawn_agents: req["permissions"]["can_spawn_agents"].as_bool().unwrap_or(true),
-            can_access_network: req["permissions"]["can_access_network"].as_bool().unwrap_or(true),
-            can_access_filesystem: req["permissions"]["can_access_filesystem"].as_bool().unwrap_or(true),
-            can_execute_commands: req["permissions"]["can_execute_commands"].as_bool().unwrap_or(true),
-        })
-    } else {
-        None
-    };
-    
-    match state.execute_tool(tool_name, &args, permissions.as_ref()).await {
+    match state.execute_tool(tool_name, &args).await {
         Ok(r) => Json(ApiResponse { success: true, data: Some(r), error: None }),
         Err(e) => Json(ApiResponse { success: false, data: None, error: Some(e.to_string()) }),
     }
@@ -927,106 +477,61 @@ async fn execute_tool(State(state): State<Arc<AgentOsState>>, Json(req): Json<se
 
 async fn list_tools(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Vec<Tool>>> {
     let tools = state.tools.read().await;
-    let list: Vec<Tool> = tools.values().cloned().collect();
-    Json(ApiResponse { success: true, data: Some(list), error: None })
+    Json(ApiResponse { success: true, data: Some(tools.values().cloned().collect()), error: None })
 }
 
-#[derive(Deserialize)]
-struct RegisterToolRequest {
-    name: String,
-    description: String,
-    parameters: serde_json::Value,
-    category: Option<String>,
+// Messages
+async fn get_messages(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Vec<AgentMessage>>> {
+    let messages = state.messages.read().await;
+    Json(ApiResponse { success: true, data: Some(messages.clone()), error: None })
 }
 
-async fn register_tool(State(state): State<Arc<AgentOsState>>, Json(req): Json<RegisterToolRequest>) -> Json<ApiResponse<String>> {
-    let category = match req.category.as_deref() {
-        Some("filesystem") => ToolCategory::Filesystem,
-        Some("network") => ToolCategory::Network,
-        Some("execution") => ToolCategory::Execution,
-        Some("messaging") => ToolCategory::Messaging,
-        _ => ToolCategory::Custom,
-    };
-    
-    let tool = Tool {
-        name: req.name.clone(),
-        description: req.description,
-        parameters: req.parameters,
-        category,
-    };
-    
-    let mut tools = state.tools.write().await;
-    tools.insert(tool.name.clone(), tool);
-    
-    Json(ApiResponse { success: true, data: Some("Tool registered successfully".to_string()), error: None })
-}
-
-#[derive(Deserialize)]
-struct UnregisterToolRequest {
-    name: String,
-}
-
-async fn unregister_tool(State(state): State<Arc<AgentOsState>>, Json(req): Json<UnregisterToolRequest>) -> Json<ApiResponse<String>> {
-    let mut tools = state.tools.write().await;
-    if tools.remove(&req.name).is_some() {
-        Json(ApiResponse { success: true, data: Some("Tool unregistered".to_string()), error: None })
-    } else {
-        Json(ApiResponse { success: false, data: None, error: Some("Tool not found".to_string()) })
-    }
-}
-
-async fn root() -> Json<ApiResponse<String>> {
-    Json(ApiResponse { 
-        success: true, 
-        data: Some("Agent OS running on port 8080".to_string()), 
-        error: None 
-    })
-}
-
-async fn list_tasks(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Vec<Task>>> {
-    let tasks = state.tasks.read().await;
-    let list: Vec<Task> = tasks.values().cloned().collect();
-    Json(ApiResponse { success: true, data: Some(list), error: None })
-}
-
-async fn get_task(State(state): State<Arc<AgentOsState>>, Json(id): Json<Uuid>) -> Json<ApiResponse<Task>> {
-    let tasks = state.tasks.read().await;
-    match tasks.get(&id) {
-        Some(t) => Json(ApiResponse { success: true, data: Some(t.clone()), error: None }),
-        None => Json(ApiResponse { success: false, data: None, error: Some("Not found".to_string()) })
-    }
-}
-
-async fn start_loop(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<String>> {
+// Process all pending tasks
+async fn process_all(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<String>> {
     let agents = state.agents.read().await;
     let init_id = agents.keys().next().cloned();
     drop(agents);
     
     if let Some(agent_id) = init_id {
-        state.start_autonomous_loop(agent_id).await;
-        Json(ApiResponse { success: true, data: Some("Loop started".to_string()), error: None })
+        let task_ids: Vec<Uuid> = {
+            let tasks = state.tasks.read().await;
+            tasks.values().filter(|t| t.status == "pending").map(|t| t.id).collect()
+        };
+        
+        for task_id in task_ids {
+            state.tasks.write().await.get_mut(&task_id).map(|t| t.status = "processing".to_string());
+            
+            let description = {
+                let tasks = state.tasks.read().await;
+                tasks.get(&task_id).map(|t| t.description.clone())
+            };
+            
+            if let Some(desc) = description {
+                match state.think_with_tools(agent_id, &desc, 10).await {
+                    Ok(result) => {
+                        state.tasks.write().await.get_mut(&task_id).map(|t| {
+                            t.status = "completed".to_string();
+                            t.result = Some(result);
+                            t.completed_at = Some(Utc::now());
+                        });
+                    }
+                    Err(e) => {
+                        state.tasks.write().await.get_mut(&task_id).map(|t| {
+                            t.status = "failed".to_string();
+                            t.error = Some(e.to_string());
+                        });
+                    }
+                }
+            }
+        }
+        Json(ApiResponse { success: true, data: Some("Processed".to_string()), error: None })
     } else {
         Json(ApiResponse { success: false, data: None, error: Some("No agents".to_string()) })
     }
 }
 
-async fn stop_loop(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<String>> {
-    state.stop_autonomous_loop().await;
-    Json(ApiResponse { success: true, data: Some("Loop stopped".to_string()), error: None })
-}
-
-async fn checkpoint(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<String>> {
-    match state.save_state().await {
-        Ok(_) => Json(ApiResponse { success: true, data: Some("Checkpoint saved".to_string()), error: None }),
-        Err(e) => Json(ApiResponse { success: false, data: None, error: Some(e.to_string()) }),
-    }
-}
-
-async fn restore(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<String>> {
-    match state.load_state().await {
-        Ok(_) => Json(ApiResponse { success: true, data: Some("State restored".to_string()), error: None }),
-        Err(e) => Json(ApiResponse { success: false, data: None, error: Some(e.to_string()) }),
-    }
+async fn root() -> Json<ApiResponse<String>> {
+    Json(ApiResponse { success: true, data: Some("Agent OS running".to_string()), error: None })
 }
 
 // ============================================================================
@@ -1046,31 +551,22 @@ async fn main() -> Result<()> {
     let state = Arc::new(AgentOsState::new(&ollama_url, &model, storage_path));
     state.init_tools().await;
 
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        state_clone.start_autonomous_loop(state_clone.agents.read().await.keys().next().unwrap().clone()).await;
-    });
-
     let app = Router::new()
         .route("/", get(root))
+        .route("/agents", get(list_agents))
+        .route("/agents", post(spawn_agent))
         .route("/tasks", post(add_task))
-        .route("/tasks/next", get(get_next_task))
         .route("/tasks", get(list_tasks))
-        .route("/task", post(get_task))
+        .route("/tasks/next", get(get_task))
         .route("/think", post(think))
         .route("/execute", post(execute_tool))
         .route("/tools", get(list_tools))
-        .route("/tools/register", post(register_tool))
-        .route("/tools/unregister", post(unregister_tool))
-        .route("/loop/start", post(start_loop))
-        .route("/loop/stop", post(stop_loop))
-        .route("/checkpoint", post(checkpoint))
-        .route("/restore", post(restore))
+        .route("/messages", get(get_messages))
+        .route("/process", post(process_all))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-    tracing::info!("Agent OS listening on http://0.0.0.0:8080");
-    tracing::info!("Ollama: {} ({})", ollama_url, model);
+    tracing::info!("Agent OS on http://0.0.0.0:8080 | Model: {}", model);
 
     axum::serve(listener, app).await?;
     Ok(())
