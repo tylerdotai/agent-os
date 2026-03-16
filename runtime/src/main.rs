@@ -617,6 +617,14 @@ async fn list_tools(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<
     Json(ApiResponse { success: true, data: Some(list), error: None })
 }
 
+async fn root() -> Json<ApiResponse<String>> {
+    Json(ApiResponse { 
+        success: true, 
+        data: Some("Agent OS running on port 8080".to_string()), 
+        error: None 
+    })
+}
+
 async fn list_tasks(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Vec<Task>>> {
     let tasks = state.tasks.read().await;
     let list: Vec<Task> = tasks.values().cloned().collect();
@@ -672,6 +680,7 @@ async fn main() -> Result<()> {
     });
 
     let app = Router::new()
+        .route("/", get(root))
         .route("/tasks", post(add_task))
         .route("/tasks/next", get(get_next_task))
         .route("/tasks", get(list_tasks))
