@@ -216,6 +216,19 @@ Be precise. Be efficient. Use tools proactively."#;
                 "required": ["command"]
             }),
         });
+
+        tools.insert("write_file".to_string(), Tool {
+            name: "write_file".to_string(),
+            description: "Write content to a file".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"}
+                },
+                "required": ["path", "content"]
+            }),
+        });
     }
 
     pub async fn think_with_tools(&self, agent_id: Uuid, task: &str, max_turns: usize) -> Result<String> {
@@ -402,6 +415,12 @@ Be precise. Be efficient. Use tools proactively."#;
                     "code": output.status.code()
                 }))
             }
+            "write_file" => {
+                let path = params["path"].as_str().unwrap_or("");
+                let content = params["content"].as_str().unwrap_or("");
+                tokio::fs::write(path, content).await?;
+                Ok(serde_json::json!({"success": true, "path": path}))
+            }
             _ => Ok(serde_json::json!({"error": "Unknown tool"}))
         }
     }
@@ -528,6 +547,75 @@ Be precise. Be efficient. Use tools proactively."#;
 
     pub async fn stop_autonomous_loop(&self) {
         self.running.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    // ============================================================================
+    // Persistence: Checkpoint & Restore
+    // ============================================================================
+
+    pub async fn save_state(&self) -> Result<()> {
+        let storage = &self.storage_path;
+        
+        // Save agents
+        let agents = self.agents.read().await;
+        let agents_path = storage.join("agents.json");
+        let agents_data = serde_json::to_string_pretty(&*agents)?;
+        tokio::fs::write(&agents_path, agents_data).await?;
+        tracing::info!("Saved {} agents to {:?}", agents.len(), agents_path);
+        drop(agents);
+        
+        // Save tasks
+        let tasks = self.tasks.read().await;
+        let tasks_path = storage.join("tasks.json");
+        let tasks_data = serde_json::to_string_pretty(&*tasks)?;
+        tokio::fs::write(&tasks_path, tasks_data).await?;
+        tracing::info!("Saved {} tasks to {:?}", tasks.len(), tasks_path);
+        drop(tasks);
+        
+        // Save task queue
+        let queue = self.task_queue.read().await;
+        let queue_path = storage.join("queue.json");
+        let queue_data = serde_json::to_string_pretty(&*queue)?;
+        tokio::fs::write(&queue_path, queue_data).await?;
+        tracing::info!("Saved queue to {:?}", queue_path);
+        
+        Ok(())
+    }
+
+    pub async fn load_state(&self) -> Result<()> {
+        let storage = &self.storage_path;
+        
+        // Load agents
+        let agents_path = storage.join("agents.json");
+        if agents_path.exists() {
+            let data = tokio::fs::read_to_string(&agents_path).await?;
+            let loaded: HashMap<Uuid, Agent> = serde_json::from_str(&data)?;
+            let mut agents = self.agents.write().await;
+            *agents = loaded;
+            tracing::info!("Loaded {} agents from {:?}", agents.len(), agents_path);
+        }
+        
+        // Load tasks
+        let tasks_path = storage.join("tasks.json");
+        if tasks_path.exists() {
+            let data = tokio::fs::read_to_string(&tasks_path).await?;
+            let loaded: HashMap<Uuid, Task> = serde_json::from_str(&data)?;
+            let mut tasks = self.tasks.write().await;
+            *tasks = loaded;
+            tracing::info!("Loaded {} tasks from {:?}", tasks.len(), tasks_path);
+        }
+        
+        // Load queue
+        let queue_path = storage.join("queue.json");
+        if queue_path.exists() {
+            let data = tokio::fs::read_to_string(&queue_path).await?;
+            let loaded: Vec<Uuid> = serde_json::from_str(&data)?;
+            let mut queue = self.task_queue.write().await;
+            *queue = loaded;
+            tracing::info!("Loaded queue from {:?}", queue_path);
+        }
+        
+        Ok(())
     }
 }
 
@@ -657,6 +745,20 @@ async fn stop_loop(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<S
     Json(ApiResponse { success: true, data: Some("Loop stopped".to_string()), error: None })
 }
 
+async fn checkpoint(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<String>> {
+    match state.save_state().await {
+        Ok(_) => Json(ApiResponse { success: true, data: Some("Checkpoint saved".to_string()), error: None }),
+        Err(e) => Json(ApiResponse { success: false, data: None, error: Some(e.to_string()) }),
+    }
+}
+
+async fn restore(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<String>> {
+    match state.load_state().await {
+        Ok(_) => Json(ApiResponse { success: true, data: Some("State restored".to_string()), error: None }),
+        Err(e) => Json(ApiResponse { success: false, data: None, error: Some(e.to_string()) }),
+    }
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -690,6 +792,8 @@ async fn main() -> Result<()> {
         .route("/tools", get(list_tools))
         .route("/loop/start", post(start_loop))
         .route("/loop/stop", post(stop_loop))
+        .route("/checkpoint", post(checkpoint))
+        .route("/restore", post(restore))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
