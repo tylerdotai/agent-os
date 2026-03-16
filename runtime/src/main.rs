@@ -16,10 +16,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock as TokioRwLock;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
 
 // ============================================================================
@@ -170,6 +170,7 @@ impl Agent {
 // Agent OS State
 // ============================================================================
 
+#[derive(Clone)]
 pub struct AgentOsState {
     pub agents: Arc<TokioRwLock<HashMap<Uuid, Agent>>>,
     pub tasks: Arc<TokioRwLock<HashMap<Uuid, Task>>>,
@@ -178,7 +179,7 @@ pub struct AgentOsState {
     pub init_agent_id: Uuid,
     pub ollama_url: String,
     pub storage_path: PathBuf,
-    pub tool_call_count: AtomicU64,
+    pub tool_call_count: Arc<AtomicU64>,
 }
 
 impl AgentOsState {
@@ -216,7 +217,7 @@ Always explain your reasoning."#;
             init_agent_id,
             ollama_url: ollama_url.to_string(),
             storage_path,
-            tool_call_count: AtomicU64::new(0),
+            tool_call_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -404,14 +405,14 @@ Always explain your reasoning."#;
                 let url = params["url"].as_str().unwrap_or("");
                 let client = reqwest::Client::new();
                 let resp = client.get(url).send().await?;
-                serde_json::json!({"status": resp.status(), "body": resp.text().await?})
+                serde_json::json!({"status": resp.status().as_u16(), "body": resp.text().await?})
             }
             "http_post" => {
                 let url = params["url"].as_str().unwrap_or("");
                 let body = &params["body"];
                 let client = reqwest::Client::new();
                 let resp = client.post(url).json(body).send().await?;
-                serde_json::json!({"status": resp.status(), "body": resp.text().await?})
+                serde_json::json!({"status": resp.status().as_u16(), "body": resp.text().await?})
             }
             "search_web" => {
                 let query = params["query"].as_str().unwrap_or("");
@@ -486,7 +487,7 @@ Always explain your reasoning."#;
             .send()
             .await?;
         
-        let result: serde_json::Value = response.json().await;
+        let result: serde_json::Value = response.json().await?;
         
         let assistant_message = result["message"]["content"]
             .as_str()
