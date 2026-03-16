@@ -1038,7 +1038,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let ollama_url = std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://192.168.0.247:11434".to_string());
-    let model = std::env::var("MODEL").unwrap_or_else(|_| "qwen3:8b".to_string());
+    let model = std::env::var("MODEL").unwrap_or_else(|_| "qwen3.5:35b-a3b".to_string());
     let storage_path = std::env::var("STORAGE_PATH").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/var/agent-os/storage"));
     
     tokio::fs::create_dir_all(&storage_path).await?;
