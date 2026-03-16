@@ -137,8 +137,7 @@ Current AI agents run on top of general-purpose operating systems. This is like 
 
 ### Prerequisites
 
-- [Titan](https://codeberg.org/tylerdotai/agent-brain-dump) — AMD Ryzen AI MAX+ 395 at 192.168.0.247
-- Proxmox (PVE) at 192.168.0.200
+- **Titan** — AMD Ryzen AI MAX+ 395 at 192.168.0.247 (runs Proxmox)
 - Linux kernel development environment
 
 ### Development Setup
