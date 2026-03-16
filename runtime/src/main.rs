@@ -75,6 +75,16 @@ pub struct Tool {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    pub category: ToolCategory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ToolCategory {
+    Filesystem,
+    Network,
+    Execution,
+    Messaging,
+    Custom,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +180,7 @@ Be precise. Be efficient. Use tools proactively."#;
             name: "get_time".to_string(),
             description: "Get current date and time".to_string(),
             parameters: serde_json::json!({}),
+            category: ToolCategory::Custom,
         });
 
         tools.insert("list_directory".to_string(), Tool {
@@ -181,6 +192,7 @@ Be precise. Be efficient. Use tools proactively."#;
                     "path": {"type": "string", "default": "."}
                 }
             }),
+            category: ToolCategory::Filesystem,
         });
 
         tools.insert("read_file".to_string(), Tool {
@@ -193,6 +205,7 @@ Be precise. Be efficient. Use tools proactively."#;
                 },
                 "required": ["path"]
             }),
+            category: ToolCategory::Filesystem,
         });
 
         tools.insert("http_get".to_string(), Tool {
@@ -205,6 +218,7 @@ Be precise. Be efficient. Use tools proactively."#;
                 },
                 "required": ["url"]
             }),
+            category: ToolCategory::Network,
         });
 
         tools.insert("search_web".to_string(), Tool {
@@ -217,6 +231,7 @@ Be precise. Be efficient. Use tools proactively."#;
                 },
                 "required": ["query"]
             }),
+            category: ToolCategory::Network,
         });
 
         tools.insert("execute_command".to_string(), Tool {
@@ -229,6 +244,7 @@ Be precise. Be efficient. Use tools proactively."#;
                 },
                 "required": ["command"]
             }),
+            category: ToolCategory::Execution,
         });
 
         tools.insert("write_file".to_string(), Tool {
@@ -242,6 +258,7 @@ Be precise. Be efficient. Use tools proactively."#;
                 },
                 "required": ["path", "content"]
             }),
+            category: ToolCategory::Filesystem,
         });
 
         // Agent messaging tools
@@ -256,18 +273,21 @@ Be precise. Be efficient. Use tools proactively."#;
                 },
                 "required": ["to_agent", "content"]
             }),
+            category: ToolCategory::Messaging,
         });
 
         tools.insert("get_messages".to_string(), Tool {
             name: "get_messages".to_string(),
             description: "Get pending messages for this agent".to_string(),
             parameters: serde_json::json!({}),
+            category: ToolCategory::Messaging,
         });
 
         tools.insert("list_agents".to_string(), Tool {
             name: "list_agents".to_string(),
             description: "List all active agents".to_string(),
             parameters: serde_json::json!({}),
+            category: ToolCategory::Messaging,
         });
 
         tools.insert("spawn_agent".to_string(), Tool {
@@ -281,6 +301,7 @@ Be precise. Be efficient. Use tools proactively."#;
                 },
                 "required": ["name"]
             }),
+            category: ToolCategory::Custom,
         });
     }
 
@@ -358,8 +379,8 @@ Be precise. Be efficient. Use tools proactively."#;
                             tool_name: Some(tool_name.to_string()),
                         });
                         
-                        // Execute tool
-                        let tool_result = self.execute_tool(tool_name, &args_str).await;
+                        // Execute tool with agent's permissions
+                        let tool_result = self.execute_tool(tool_name, &args_str, Some(&agent.permissions)).await;
                         
                         // Add tool result as message
                         let result_str = match tool_result {
@@ -417,7 +438,45 @@ Be precise. Be efficient. Use tools proactively."#;
         Ok("Max turns reached".to_string())
     }
 
-    pub async fn execute_tool(&self, tool_name: &str, args: &str) -> Result<serde_json::Value> {
+    /// Check if agent has permission to use a tool
+    pub fn check_tool_permission(&self, tool_name: &str, permissions: &Permissions) -> Result<()> {
+        // Map tools to required permissions
+        let required_permission = match tool_name {
+            "list_directory" | "read_file" | "write_file" => {
+                if !permissions.can_access_filesystem {
+                    return Err(anyhow::anyhow!("Permission denied: filesystem access not allowed"));
+                }
+                return Ok(());
+            }
+            "http_get" | "search_web" => {
+                if !permissions.can_access_network {
+                    return Err(anyhow::anyhow!("Permission denied: network access not allowed"));
+                }
+                return Ok(());
+            }
+            "execute_command" => {
+                if !permissions.can_execute_commands {
+                    return Err(anyhow::anyhow!("Permission denied: command execution not allowed"));
+                }
+                return Ok(());
+            }
+            "spawn_agent" => {
+                if !permissions.can_spawn_agents {
+                    return Err(anyhow::anyhow!("Permission denied: agent spawning not allowed"));
+                }
+                return Ok(());
+            }
+            _ => return Ok(()), // Custom tools allowed by default
+        };
+        Ok(())
+    }
+
+    pub async fn execute_tool(&self, tool_name: &str, args: &str, permissions: Option<&Permissions>) -> Result<serde_json::Value> {
+        // Check permissions if provided
+        if let Some(perms) = permissions {
+            self.check_tool_permission(tool_name, perms)?;
+        }
+        
         let params: serde_json::Value = serde_json::from_str(args)
             .unwrap_or(serde_json::json!({}));
         
@@ -848,7 +907,19 @@ async fn execute_tool(State(state): State<Arc<AgentOsState>>, Json(req): Json<se
     let tool_name = req["tool"].as_str().unwrap_or("");
     let args = req["parameters"].to_string();
     
-    match state.execute_tool(tool_name, &args).await {
+    // Extract optional permissions from request
+    let permissions = if req.get("permissions").is_some() {
+        Some(Permissions {
+            can_spawn_agents: req["permissions"]["can_spawn_agents"].as_bool().unwrap_or(true),
+            can_access_network: req["permissions"]["can_access_network"].as_bool().unwrap_or(true),
+            can_access_filesystem: req["permissions"]["can_access_filesystem"].as_bool().unwrap_or(true),
+            can_execute_commands: req["permissions"]["can_execute_commands"].as_bool().unwrap_or(true),
+        })
+    } else {
+        None
+    };
+    
+    match state.execute_tool(tool_name, &args, permissions.as_ref()).await {
         Ok(r) => Json(ApiResponse { success: true, data: Some(r), error: None }),
         Err(e) => Json(ApiResponse { success: false, data: None, error: Some(e.to_string()) }),
     }
@@ -858,6 +929,50 @@ async fn list_tools(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<
     let tools = state.tools.read().await;
     let list: Vec<Tool> = tools.values().cloned().collect();
     Json(ApiResponse { success: true, data: Some(list), error: None })
+}
+
+#[derive(Deserialize)]
+struct RegisterToolRequest {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+    category: Option<String>,
+}
+
+async fn register_tool(State(state): State<Arc<AgentOsState>>, Json(req): Json<RegisterToolRequest>) -> Json<ApiResponse<String>> {
+    let category = match req.category.as_deref() {
+        Some("filesystem") => ToolCategory::Filesystem,
+        Some("network") => ToolCategory::Network,
+        Some("execution") => ToolCategory::Execution,
+        Some("messaging") => ToolCategory::Messaging,
+        _ => ToolCategory::Custom,
+    };
+    
+    let tool = Tool {
+        name: req.name.clone(),
+        description: req.description,
+        parameters: req.parameters,
+        category,
+    };
+    
+    let mut tools = state.tools.write().await;
+    tools.insert(tool.name.clone(), tool);
+    
+    Json(ApiResponse { success: true, data: Some("Tool registered successfully".to_string()), error: None })
+}
+
+#[derive(Deserialize)]
+struct UnregisterToolRequest {
+    name: String,
+}
+
+async fn unregister_tool(State(state): State<Arc<AgentOsState>>, Json(req): Json<UnregisterToolRequest>) -> Json<ApiResponse<String>> {
+    let mut tools = state.tools.write().await;
+    if tools.remove(&req.name).is_some() {
+        Json(ApiResponse { success: true, data: Some("Tool unregistered".to_string()), error: None })
+    } else {
+        Json(ApiResponse { success: false, data: None, error: Some("Tool not found".to_string()) })
+    }
 }
 
 async fn root() -> Json<ApiResponse<String>> {
@@ -945,6 +1060,8 @@ async fn main() -> Result<()> {
         .route("/think", post(think))
         .route("/execute", post(execute_tool))
         .route("/tools", get(list_tools))
+        .route("/tools/register", post(register_tool))
+        .route("/tools/unregister", post(unregister_tool))
         .route("/loop/start", post(start_loop))
         .route("/loop/stop", post(stop_loop))
         .route("/checkpoint", post(checkpoint))
