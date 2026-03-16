@@ -59,6 +59,17 @@ pub struct Message {
     pub tool_name: Option<String>,
 }
 
+// Agent-to-agent message type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessage {
+    pub id: Uuid,
+    pub from_agent: Uuid,
+    pub to_agent: Uuid,
+    pub content: String,
+    pub timestamp: DateTime<Utc>,
+    pub read: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
     pub name: String,
@@ -86,6 +97,7 @@ pub struct AgentOsState {
     pub tasks: Arc<TokioRwLock<HashMap<Uuid, Task>>>,
     pub task_queue: Arc<TokioRwLock<Vec<Uuid>>>,
     pub tools: Arc<TokioRwLock<HashMap<String, Tool>>>,
+    pub agent_mailbox: Arc<TokioRwLock<HashMap<Uuid, Vec<AgentMessage>>>>,  // Message queue per agent
     pub ollama_url: String,
     pub model: String,
     pub storage_path: PathBuf,
@@ -129,6 +141,7 @@ Be precise. Be efficient. Use tools proactively."#;
         let tasks = Arc::new(TokioRwLock::new(HashMap::new()));
         let task_queue = Arc::new(TokioRwLock::new(Vec::new()));
         let tools = Arc::new(TokioRwLock::new(HashMap::new()));
+        let agent_mailbox = Arc::new(TokioRwLock::new(HashMap::new()));
 
         // Spawn init agent
         let agents_clone = agents.clone();
@@ -142,6 +155,7 @@ Be precise. Be efficient. Use tools proactively."#;
             tasks,
             task_queue,
             tools,
+            agent_mailbox,
             ollama_url: ollama_url.to_string(),
             model: model.to_string(),
             storage_path,
@@ -227,6 +241,45 @@ Be precise. Be efficient. Use tools proactively."#;
                     "content": {"type": "string"}
                 },
                 "required": ["path", "content"]
+            }),
+        });
+
+        // Agent messaging tools
+        tools.insert("send_message".to_string(), Tool {
+            name: "send_message".to_string(),
+            description: "Send a message to another agent".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "to_agent": {"type": "string", "description": "UUID of the target agent"},
+                    "content": {"type": "string", "description": "Message content"}
+                },
+                "required": ["to_agent", "content"]
+            }),
+        });
+
+        tools.insert("get_messages".to_string(), Tool {
+            name: "get_messages".to_string(),
+            description: "Get pending messages for this agent".to_string(),
+            parameters: serde_json::json!({}),
+        });
+
+        tools.insert("list_agents".to_string(), Tool {
+            name: "list_agents".to_string(),
+            description: "List all active agents".to_string(),
+            parameters: serde_json::json!({}),
+        });
+
+        tools.insert("spawn_agent".to_string(), Tool {
+            name: "spawn_agent".to_string(),
+            description: "Spawn a new child agent".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name for the new agent"},
+                    "system_prompt": {"type": "string", "description": "System prompt for the agent"}
+                },
+                "required": ["name"]
             }),
         });
     }
@@ -420,6 +473,108 @@ Be precise. Be efficient. Use tools proactively."#;
                 let content = params["content"].as_str().unwrap_or("");
                 tokio::fs::write(path, content).await?;
                 Ok(serde_json::json!({"success": true, "path": path}))
+            }
+            // Agent messaging tools
+            "send_message" => {
+                let to_agent_str = params["to_agent"].as_str().unwrap_or("");
+                let content = params["content"].as_str().unwrap_or("");
+                
+                let to_agent: Uuid = to_agent_str.parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid agent UUID"))?;
+                
+                // Get the sender (first agent for now)
+                let from_agent = {
+                    let agents = self.agents.read().await;
+                    agents.keys().next().cloned()
+                };
+                
+                if let Some(from) = from_agent {
+                    let msg = AgentMessage {
+                        id: Uuid::new_v4(),
+                        from_agent: from,
+                        to_agent,
+                        content: content.to_string(),
+                        timestamp: Utc::now(),
+                        read: false,
+                    };
+                    
+                    let mut mailbox = self.agent_mailbox.write().await;
+                    mailbox.entry(to_agent).or_insert_with(Vec::new).push(msg);
+                    
+                    Ok(serde_json::json!({"success": true, "message": "Message sent"}))
+                } else {
+                    Ok(serde_json::json!({"error": "No sender agent"}))
+                }
+            }
+            "get_messages" => {
+                // Get messages for the first agent
+                let agent_id = {
+                    let agents = self.agents.read().await;
+                    agents.keys().next().cloned()
+                };
+                
+                if let Some(id) = agent_id {
+                    let mut mailbox = self.agent_mailbox.write().await;
+                    let messages = mailbox.entry(id).or_insert_with(Vec::new);
+                    
+                    // Mark messages as read
+                    for msg in messages.iter_mut() {
+                        msg.read = true;
+                    }
+                    
+                    let result: Vec<serde_json::Value> = messages.iter().map(|m| {
+                        serde_json::json!({
+                            "id": m.id,
+                            "from": m.from_agent,
+                            "content": m.content,
+                            "timestamp": m.timestamp
+                        })
+                    }).collect();
+                    
+                    // Clear read messages
+                    messages.retain(|m| !m.read);
+                    
+                    Ok(serde_json::json!({"messages": result}))
+                } else {
+                    Ok(serde_json::json!({"messages": []}))
+                }
+            }
+            "list_agents" => {
+                let agents = self.agents.read().await;
+                let list: Vec<serde_json::Value> = agents.values().map(|a| {
+                    serde_json::json!({
+                        "id": a.id,
+                        "name": a.name,
+                        "created_at": a.created_at
+                    })
+                }).collect();
+                Ok(serde_json::json!({"agents": list}))
+            }
+            "spawn_agent" => {
+                let name = params["name"].as_str().unwrap_or("new-agent");
+                let system_prompt = params["system_prompt"].as_str()
+                    .unwrap_or("You are an autonomous AI agent.");
+                
+                let new_agent = Agent {
+                    id: Uuid::new_v4(),
+                    name: name.to_string(),
+                    parent_id: None,
+                    created_at: Utc::now(),
+                    system_prompt: system_prompt.to_string(),
+                    context: vec![Message {
+                        role: "system".to_string(),
+                        content: system_prompt.to_string(),
+                        tool_call_id: None,
+                        tool_name: None,
+                    }],
+                    permissions: Permissions::default(),
+                };
+                
+                let agent_id = new_agent.id;
+                let mut agents = self.agents.write().await;
+                agents.insert(agent_id, new_agent);
+                
+                Ok(serde_json::json!({"success": true, "agent_id": agent_id}))
             }
             _ => Ok(serde_json::json!({"error": "Unknown tool"}))
         }
