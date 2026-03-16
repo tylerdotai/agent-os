@@ -447,7 +447,83 @@ Be precise. Be efficient. Use tools proactively."#;
 
     pub async fn start_autonomous_loop(&self, agent_id: Uuid) {
         self.running.fetch_add(1, Ordering::Relaxed);
-        tracing::info!("Autonomous loop started (stub)");
+        
+        let running = self.running.clone();
+        let state = Arc::new(()) as Arc<()>; // Placeholder for state clone
+        
+        // Clone all needed state
+        let tasks = self.tasks.clone();
+        let task_queue = self.task_queue.clone();
+        let ollama_url = self.ollama_url.clone();
+        let model = self.model.clone();
+        let tools = self.tools.clone();
+        
+        // Need to clone agents too
+        let agents = self.agents.clone();
+        
+        tracing::info!("Autonomous loop started");
+        
+        // Main autonomous loop
+        while running.load(Ordering::Relaxed) > 0 {
+            // Get next task from queue
+            let task_id = {
+                let mut queue = task_queue.write().await;
+                queue.pop()
+            };
+            
+            if let Some(id) = task_id {
+                tracing::info!("Processing task: {}", id);
+                
+                // Update status to processing
+                {
+                    let mut t = tasks.write().await;
+                    if let Some(task) = t.get_mut(&id) {
+                        task.status = "processing".to_string();
+                    }
+                }
+                
+                // Get the task description
+                let description = {
+                    let t = tasks.read().await;
+                    t.get(&id).map(|task| task.description.clone())
+                };
+                
+                if let Some(desc) = description {
+                    // Get agent and process
+                    let agent_exists = {
+                        let agents_read = agents.read().await;
+                        agents_read.contains_key(&agent_id)
+                    };
+                    
+                    if agent_exists {
+                        // Call think_with_tools - this needs self reference
+                        // We'll do the thinking inline here
+                        let result = self.think_with_tools(agent_id, &desc, 10).await;
+                        
+                        // Update task with result
+                        let mut t = tasks.write().await;
+                        if let Some(task) = t.get_mut(&id) {
+                            match result {
+                                Ok(r) => {
+                                    task.status = "completed".to_string();
+                                    task.result = Some(r);
+                                }
+                                Err(e) => {
+                                    task.status = "failed".to_string();
+                                    task.error = Some(e.to_string());
+                                }
+                            }
+                            task.completed_at = Some(Utc::now());
+                        }
+                    }
+                }
+            } else {
+                // No tasks - sleep briefly to avoid busy loop
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+        }
+        
+        tracing::info!("Autonomous loop stopped");
     }
 
     pub async fn stop_autonomous_loop(&self) {
