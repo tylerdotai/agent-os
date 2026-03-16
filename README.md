@@ -172,12 +172,12 @@ Current AI agents run on top of general-purpose operating systems. This is like 
 <!-- ROADMAP -->
 ## Roadmap
 
-- [ ] Linux kernel module for context tracking
-- [ ] Basic agent process (fork + cgroup isolation)
-- [ ] Tool registry as userspace daemon
-- [ ] Message bus (native agent-to-agent IPC)
-- [ ] Persistence layer (checkpoint/restore)
-- [ ] Agent permissions model
+- [x] Linux kernel module for context tracking
+- [x] Basic agent process (fork + cgroup isolation)
+- [x] Tool registry as userspace daemon
+- [x] Message bus (native agent-to-agent IPC)
+- [x] Persistence layer (checkpoint/restore)
+- [x] Agent permissions model
 - [ ] Unikernel port (seL4)
 - [ ] Bare metal support
 
