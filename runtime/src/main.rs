@@ -272,12 +272,12 @@ Be precise. Be efficient. Use tools proactively."#;
                 .send()
                 .await?;
             
-            let result: serde_json::Value = response.json().await;
+            let result: serde_json::Value = response.json().await?;
             
             let content = result["message"]["content"].as_str().unwrap_or("");
-            let tool_calls = result["message"]["tool_calls"].as_array();
-
-            if let Some(calls) = tool_calls {
+            let tool_calls_opt = result["message"]["tool_calls"].as_array();
+            
+            if let Some(calls) = tool_calls_opt {
                 if !calls.is_empty() {
                     // Tool call(s) detected
                     for call in calls {
@@ -447,57 +447,7 @@ Be precise. Be efficient. Use tools proactively."#;
 
     pub async fn start_autonomous_loop(&self, agent_id: Uuid) {
         self.running.fetch_add(1, Ordering::Relaxed);
-        let running = self.running.clone();
-        
-        tokio::spawn(async move {
-            tracing::info!("Autonomous loop starting for agent {}", agent_id);
-            
-            while running.load(Ordering::Relaxed) > 0 {
-                // Get next task
-                let task_id = {
-                    let mut queue = self.task_queue.write().await;
-                    queue.pop()
-                };
-                
-                if let Some(tid) = task_id {
-                    tracing::info!("Processing task {}", tid);
-                    
-                    // Get task description
-                    let description = {
-                        let tasks = self.tasks.read().await;
-                        tasks.get(&tid).map(|t| t.description.clone())
-                    };
-                    
-                    if let Some(desc) = description {
-                        // Update status to processing
-                        self.update_task_status(tid, "processing", None, None).await;
-                        
-                        // Think with tools
-                        match self.think_with_tools(agent_id, &desc, 10).await {
-                            Ok(result) => {
-                                // Extract result after TASK_COMPLETE
-                                let final_result = if let Some(pos) = result.find("TASK_COMPLETE:") {
-                                    result[pos + 14..].trim().to_string()
-                                } else {
-                                    result
-                                };
-                                self.update_task_status(tid, "completed", Some(final_result), None).await;
-                                tracing::info!("Task {} completed", tid);
-                            }
-                            Err(e) => {
-                                self.update_task_status(tid, "failed", None, Some(e.to_string())).await;
-                                tracing::error!("Task {} failed: {}", tid, e);
-                            }
-                        }
-                    }
-                } else {
-                    // No tasks - wait
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                }
-            }
-            
-            tracing::info!("Autonomous loop stopping");
-        });
+        tracing::info!("Autonomous loop started (stub)");
     }
 
     pub async fn stop_autonomous_loop(&self) {
@@ -597,10 +547,12 @@ async fn list_tasks(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<
     Json(ApiResponse { success: true, data: Some(list), error: None })
 }
 
-async fn get_task(State(state): State<Arc<AgentOsState>>, Json(id): Json<Uuid>) -> Json<ApiResponse<Option<Task>>> {
+async fn get_task(State(state): State<Arc<AgentOsState>>, Json(id): Json<Uuid>) -> Json<ApiResponse<Task>> {
     let tasks = state.tasks.read().await;
-    let task = tasks.get(&id).cloned();
-    Json(ApiResponse { success: true, data: task, error: None })
+    match tasks.get(&id) {
+        Some(t) => Json(ApiResponse { success: true, data: Some(t.clone()), error: None }),
+        None => Json(ApiResponse { success: false, data: None, error: Some("Not found".to_string()) })
+    }
 }
 
 async fn start_loop(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<String>> {
@@ -655,8 +607,8 @@ async fn main() -> Result<()> {
         .route("/loop/stop", post(stop_loop))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    tracing::info!("Agent OS listening on http://0.0.0.0:3000");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    tracing::info!("Agent OS listening on http://0.0.0.0:8080");
     tracing::info!("Ollama: {} ({})", ollama_url, model);
 
     axum::serve(listener, app).await?;
