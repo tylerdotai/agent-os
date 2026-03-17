@@ -284,10 +284,90 @@ impl AgentOsState {
 
     // Persistence stub - save/load tasks
     pub async fn save_state(&self) -> Result<()> {
+        let path = self.storage_path.clone();
+        
+        // Save as simple JSON array to avoid serialization issues
+        let tasks_list = {
+            let tasks = self.tasks.read().await;
+            tasks.values().map(|t| {
+                serde_json::json!({
+                    "id": t.id.to_string(),
+                    "description": t.description,
+                    "status": t.status,
+                    "result": t.result,
+                    "error": t.error,
+                    "created_at": t.created_at.to_rfc3339(),
+                    "completed_at": t.completed_at.map(|c| c.to_rfc3339())
+                })
+            }).collect::<Vec<_>>()
+        };
+        
+        let queue: Vec<uuid::Uuid> = self.task_queue.read().await.clone();
+        
+        let tasks_json = serde_json::to_string_pretty(&tasks_list).unwrap_or_default();
+        let queue_json = serde_json::to_string_pretty(&queue).unwrap_or_default();
+        
+        if let Err(e) = tokio::fs::create_dir_all(&path).await {
+            tracing::warn!("Failed to create dir: {}", e);
+        }
+        if let Err(e) = tokio::fs::write(path.join("tasks.json"), &tasks_json).await {
+            tracing::warn!("Failed to write tasks: {}", e);
+        }
+        if let Err(e) = tokio::fs::write(path.join("queue.json"), &queue_json).await {
+            tracing::warn!("Failed to write queue: {}", e);
+        }
+        
+        tracing::info!("State saved ({} tasks)", tasks_list.len());
         Ok(())
     }
     
     pub async fn load_state(&self) -> Result<()> {
+        let path = &self.storage_path;
+        tracing::info!("Loading state from {:?}", path);
+        
+        // Load tasks from array
+        if let Ok(data) = tokio::fs::read_to_string(path.join("tasks.json")).await {
+            tracing::info!("Read tasks.json: {} bytes", data.len());
+            if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&data) {
+                let mut tasks = self.tasks.write().await;
+                for value in list {
+                    if let (Some(id_str), Some(desc), Some(status)) = (
+                        value.get("id").and_then(|v| v.as_str()),
+                        value.get("description").and_then(|v| v.as_str()),
+                        value.get("status").and_then(|v| v.as_str()),
+                    ) {
+                        if let Ok(id) = uuid::Uuid::parse_str(id_str) {
+                            let task = Task {
+                                id,
+                                description: desc.to_string(),
+                                status: status.to_string(),
+                                result: value.get("result").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                                error: value.get("error").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                                created_at: value.get("created_at").and_then(|v| v.as_str())
+                                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                                    .unwrap_or_else(chrono::Utc::now),
+                                completed_at: value.get("completed_at").and_then(|v| v.as_str())
+                                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                                    .map(|dt| dt.with_timezone(&chrono::Utc)),
+                            };
+                            tasks.insert(id, task);
+                        }
+                    }
+                }
+                tracing::info!("Loaded {} tasks", tasks.len());
+            }
+        }
+        
+        // Load task queue
+        if let Ok(data) = tokio::fs::read_to_string(path.join("queue.json")).await {
+            if let Ok(queue_ids) = serde_json::from_str::<Vec<uuid::Uuid>>(&data) {
+                let mut queue = self.task_queue.write().await;
+                *queue = queue_ids;
+                tracing::info!("Loaded {} queued tasks", queue.len());
+            }
+        }
+        
         Ok(())
     }
     pub fn new(config: &Config) -> Self {
@@ -974,6 +1054,7 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(AgentOsState::new(&config));
     state.init_tools(&config).await;
+    state.load_state().await.unwrap_or_else(|e| tracing::warn!("Load state error: {}", e));
     // Start autonomous task processing loop
     let state_clone = state.clone();
     tokio::spawn(async move {
@@ -1027,6 +1108,8 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
+                        // Save state after task completion
+                        let _ = state_clone.save_state().await;
                     }
                 }
             }
