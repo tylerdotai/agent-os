@@ -56,6 +56,12 @@ pub struct OllamaConfig {
     pub url: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default)]
+    pub private_url: Option<String>,
+    #[serde(default)]
+    pub private_model: Option<String>,
+    #[serde(default)]
+    pub default_private: bool,
 }
 
 fn default_ollama_url() -> String { "http://192.168.0.247:11434".to_string() }
@@ -266,6 +272,8 @@ pub struct AgentOsState {
     pub messages: Arc<TokioRwLock<Vec<AgentMessage>>>,
     pub ollama_url: String,
     pub model: String,
+    pub ollama_url_private: Option<String>,
+    pub model_private: Option<String>,
     pub storage_path: PathBuf,
     pub running: Arc<std::sync::atomic::AtomicU64>,
     pub permissions: PermissionsConfig,
@@ -310,11 +318,32 @@ impl AgentOsState {
             messages,
             ollama_url: config.ollama.url.clone(),
             model: config.ollama.model.clone(),
+            ollama_url_private: config.ollama.private_url.clone(),
+            model_private: config.ollama.private_model.clone(),
             storage_path: PathBuf::from(&config.storage.path),
             running: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             permissions: config.permissions.clone(),
             mcp_client: McpClient::new(config.mcp_servers.clone()),
         }
+    }
+
+    // Privacy routing
+    fn get_ollama_url(&self, private: bool) -> String {
+        if private {
+            if let Some(ref url) = self.ollama_url_private {
+                return url.clone();
+            }
+        }
+        self.ollama_url.clone()
+    }
+    
+    fn get_ollama_model(&self, private: bool) -> String {
+        if private {
+            if let Some(ref model) = self.model_private {
+                return model.clone();
+            }
+        }
+        self.model.clone()
     }
 
     pub async fn init_tools(&self, config: &Config) {
@@ -331,7 +360,7 @@ impl AgentOsState {
         }
     }
 
-    pub async fn think_with_tools(&self, agent_id: Uuid, task: &str, max_turns: usize) -> Result<String> {
+    pub async fn think_with_tools(&self, agent_id: Uuid, task: &str, max_turns: usize, private: bool) -> Result<String> {
         let mut agents = self.agents.write().await;
         let agent = agents.get_mut(&agent_id)
             .ok_or_else(|| anyhow::anyhow!("Agent not found"))?;
@@ -359,13 +388,13 @@ impl AgentOsState {
 
             let client = reqwest::Client::new();
             let request = serde_json::json!({
-                "model": self.model,
+                "model": self.get_ollama_model(private),
                 "messages": messages,
                 "tools": tools_json,
                 "stream": false
             });
             
-            let response = client.post(format!("{}/api/chat", self.ollama_url))
+            let response = client.post(format!("{}/api/chat", self.get_ollama_url(private)))
                 .json(&request).send().await?;
             
             let result = response.json::<serde_json::Value>().await?;
@@ -560,7 +589,12 @@ struct ApiResponse<T> { success: bool, data: Option<T>, error: Option<String> }
 struct TaskRequest { description: String }
 
 #[derive(Deserialize)]
-struct ThinkRequest { prompt: String, max_turns: Option<usize> }
+struct ThinkRequest { 
+    prompt: String, 
+    max_turns: Option<usize>,
+    #[serde(default)]
+    private: Option<bool>,
+}
 
 #[derive(Deserialize)]
 struct SpawnRequest { name: String, system_prompt: Option<String> }
@@ -611,7 +645,7 @@ async fn think(State(state): State<Arc<AgentOsState>>, Json(req): Json<ThinkRequ
     drop(agents);
     
     if let Some(agent_id) = init_id {
-        match state.think_with_tools(agent_id, &req.prompt, req.max_turns.unwrap_or(10)).await {
+        match state.think_with_tools(agent_id, &req.prompt, req.max_turns.unwrap_or(10), req.private.unwrap_or(false)).await {
             Ok(r) => Json(ApiResponse { success: true, data: Some(r), error: None }),
             Err(e) => Json(ApiResponse { success: false, data: None, error: Some(e.to_string()) }),
         }
@@ -659,7 +693,7 @@ async fn process_all(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse
             };
             
             if let Some(desc) = description {
-                match state.think_with_tools(agent_id, &desc, 10).await {
+                match state.think_with_tools(agent_id, &desc, 10, false).await {
                     Ok(result) => {
                         state.tasks.write().await.get_mut(&task_id).map(|t| {
                             t.status = "completed".to_string();
@@ -876,11 +910,6 @@ struct AddMcpServerRequest {
 }
 
 async fn mcp_add_server(State(state): State<Arc<AgentOsState>>, Json(req): Json<AddMcpServerRequest>) -> Json<ApiResponse<String>> {
-    let server = McpServerConfig {
-        name: req.name.clone(),
-        url: req.url.clone(),
-    };
-    
     // Try to connect and get tools
     match state.mcp_client.list_tools(&req.url).await {
         Ok(tools) => {
@@ -920,7 +949,7 @@ async fn main() -> Result<()> {
         tracing::warn!("Failed to load config: {}, using defaults", e);
         Config {
             server: ServerConfig { host: "0.0.0.0".to_string(), port: 8080 },
-            ollama: OllamaConfig { url: "http://192.168.0.247:11434".to_string(), model: "qwen3.5:35b-a3b".to_string() },
+            ollama: OllamaConfig { url: "http://192.168.0.247:11434".to_string(), model: "qwen3.5:35b-a3b".to_string(), private_url: None, private_model: None, default_private: false },
             storage: StorageConfig { path: "/var/agent-os/storage".to_string() },
             system: SystemConfig { system_prompt: "You are an autonomous AI agent.".to_string() },
             tools: vec![],

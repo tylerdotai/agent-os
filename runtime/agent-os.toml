@@ -1,6 +1,4 @@
 # Agent OS Configuration
-# Load with: cargo run -- --config agent-os.toml
-
 [server]
 host = "0.0.0.0"
 port = 8080
@@ -8,6 +6,9 @@ port = 8080
 [ollama]
 url = "http://192.168.0.247:11434"
 model = "qwen3.5:35b-a3b"
+private_url = "http://192.168.0.247:11434"
+private_model = "qwen3.5:35b-a3b"
+default_private = false
 
 [storage]
 path = "/var/agent-os/storage"
@@ -15,8 +16,7 @@ path = "/var/agent-os/storage"
 [system]
 system_prompt = "You are an autonomous AI agent. Complete tasks using tools.\nWhen done, output: TASK_COMPLETE: <result>"
 
-# Tool registry - dynamically loaded
-# Permissions: network, filesystem, execute, spawn
+# Tool registry
 [[tools]]
 name = "get_time"
 description = "Get current timestamp"
@@ -65,7 +65,7 @@ description = "Send message to another agent"
 handler = "builtin"
 permissions = []
 
-# Agent permissions (default for all agents)
+# Permissions
 [permissions]
 allow_spawn = true
 allow_network = true
@@ -76,7 +76,3 @@ allow_execute = true
 [[mcp_servers]]
 name = "searxng"
 url = "http://192.168.0.247:18080/mcp"
-
-[[mcp_servers]]
-name = "qdrant"
-url = "http://192.168.0.247:6333/mcp"
