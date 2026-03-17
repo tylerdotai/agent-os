@@ -10,6 +10,7 @@ license = "MIT"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
@@ -17,6 +18,7 @@ tracing-subscriber = "0.3"
 anyhow = "1"
 axum = "0.7"
 reqwest = { version = "0.12", features = ["json"] }
+clap = { version = "4", features = ["derive"] }
 
 [features]
 default = []

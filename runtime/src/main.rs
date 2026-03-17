@@ -1,6 +1,7 @@
 //! Agent OS - Operating System for Autonomous AI Agents
 //!
 //! Built for agents to consume programmatically.
+//! Configurable via YAML: cargo run -- --config agent-os.yml
 
 use anyhow::Result;
 use axum::{
@@ -8,14 +9,106 @@ use axum::{
     Router, Json,
     extract::State,
 };
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock as TokioRwLock;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Config {
+    #[serde(default)]
+    pub server: ServerConfig,
+    #[serde(default)]
+    pub ollama: OllamaConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default)]
+    pub system: SystemConfig,
+    #[serde(default)]
+    pub tools: Vec<ToolConfig>,
+    #[serde(default)]
+    pub permissions: PermissionsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    #[serde(default = "default_host")]
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+}
+
+fn default_host() -> String { "0.0.0.0".to_string() }
+fn default_port() -> u16 { 8080 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OllamaConfig {
+    #[serde(default = "default_ollama_url")]
+    pub url: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+}
+
+fn default_ollama_url() -> String { "http://192.168.0.247:11434".to_string() }
+fn default_model() -> String { "qwen3.5:35b-a3b".to_string() }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StorageConfig {
+    #[serde(default = "default_storage_path")]
+    pub path: String,
+}
+
+fn default_storage_path() -> String { "/var/agent-os/storage".to_string() }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SystemConfig {
+    #[serde(default = "default_system_prompt")]
+    pub system_prompt: String,
+}
+
+fn default_system_prompt() -> String { 
+    "You are an autonomous AI agent. Complete tasks using tools.\nWhen done, output: TASK_COMPLETE: <result>".to_string() 
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolConfig {
+    pub name: String,
+    pub description: String,
+    #[serde(default = "default_handler")]
+    pub handler: String,
+    pub parameters: serde_json::Value,
+}
+
+fn default_handler() -> String { "builtin".to_string() }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PermissionsConfig {
+    #[serde(default = "default_true")]
+    pub allow_spawn: bool,
+    #[serde(default = "default_true")]
+    pub allow_network: bool,
+    #[serde(default = "default_true")]
+    pub allow_filesystem: bool,
+    #[serde(default = "default_true")]
+    pub allow_execute: bool,
+}
+
+fn default_true() -> bool { true }
+
+#[derive(Parser, Debug)]
+#[command(name = "agent-os")]
+pub struct Args {
+    #[arg(short, long, default_value = "agent-os.yml")]
+    pub config: String,
+}
 
 // ============================================================================
 // Core Types
@@ -79,23 +172,22 @@ pub struct AgentOsState {
     pub ollama_url: String,
     pub model: String,
     pub storage_path: PathBuf,
-    pub running: Arc<AtomicU64>,
+    pub running: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl AgentOsState {
-    pub fn new(ollama_url: &str, model: &str, storage_path: PathBuf) -> Self {
-        let system_prompt = r#"You are an autonomous AI agent. Complete tasks using tools. 
-When done, output: TASK_COMPLETE: <result>"#;
+    pub fn new(config: &Config) -> Self {
+        let system_prompt = config.system.system_prompt.clone();
 
         let init_agent = Agent {
             id: Uuid::new_v4(),
             name: "init".to_string(),
             parent_id: None,
             created_at: Utc::now(),
-            system_prompt: system_prompt.to_string(),
+            system_prompt: system_prompt.clone(),
             context: vec![Message {
                 role: "system".to_string(),
-                content: system_prompt.to_string(),
+                content: system_prompt,
                 tool_call_id: None,
                 tool_name: None,
             }],
@@ -119,89 +211,24 @@ When done, output: TASK_COMPLETE: <result>"#;
             task_queue,
             tools,
             messages,
-            ollama_url: ollama_url.to_string(),
-            model: model.to_string(),
-            storage_path,
-            running: Arc::new(AtomicU64::new(0)),
+            ollama_url: config.ollama.url.clone(),
+            model: config.ollama.model.clone(),
+            storage_path: PathBuf::from(&config.storage.path),
+            running: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
-    pub async fn init_tools(&self) {
+    pub async fn init_tools(&self, config: &Config) {
         let mut tools = self.tools.write().await;
         
-        tools.insert("get_time".to_string(), Tool {
-            name: "get_time".to_string(),
-            description: "Get current timestamp".to_string(),
-            parameters: serde_json::json!({}),
-        });
-
-        tools.insert("list_directory".to_string(), Tool {
-            name: "list_directory".to_string(),
-            description: "List files in directory".to_string(),
-            parameters: serde_json::json!({
-                "properties": {"path": {"type": "string", "default": "."}}
-            }),
-        });
-
-        tools.insert("read_file".to_string(), Tool {
-            name: "read_file".to_string(),
-            description: "Read file contents".to_string(),
-            parameters: serde_json::json!({
-                "properties": {"path": {"type": "string"}},
-                "required": ["path"]
-            }),
-        });
-
-        tools.insert("http_get".to_string(), Tool {
-            name: "http_get".to_string(),
-            description: "Fetch URL content".to_string(),
-            parameters: serde_json::json!({
-                "properties": {"url": {"type": "string"}},
-                "required": ["url"]
-            }),
-        });
-
-        tools.insert("search_web".to_string(), Tool {
-            name: "search_web".to_string(),
-            description: "Search via SearXNG".to_string(),
-            parameters: serde_json::json!({
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"]
-            }),
-        });
-
-        tools.insert("execute_command".to_string(), Tool {
-            name: "execute_command".to_string(),
-            description: "Run shell command".to_string(),
-            parameters: serde_json::json!({
-                "properties": {"command": {"type": "string"}},
-                "required": ["command"]
-            }),
-        });
-        
-        tools.insert("spawn_agent".to_string(), Tool {
-            name: "spawn_agent".to_string(),
-            description: "Spawn a child agent".to_string(),
-            parameters: serde_json::json!({
-                "properties": {
-                    "name": {"type": "string"},
-                    "system_prompt": {"type": "string"}
-                },
-                "required": ["name"]
-            }),
-        });
-        
-        tools.insert("send_message".to_string(), Tool {
-            name: "send_message".to_string(),
-            description: "Send message to another agent".to_string(),
-            parameters: serde_json::json!({
-                "properties": {
-                    "to_agent": {"type": "string"},
-                    "content": {"type": "string"}
-                },
-                "required": ["to_agent", "content"]
-            }),
-        });
+        for tool_config in &config.tools {
+            tools.insert(tool_config.name.clone(), Tool {
+                name: tool_config.name.clone(),
+                description: tool_config.description.clone(),
+                parameters: tool_config.parameters.clone(),
+            });
+            tracing::info!("Loaded tool: {}", tool_config.name);
+        }
     }
 
     pub async fn think_with_tools(&self, agent_id: Uuid, task: &str, max_turns: usize) -> Result<String> {
@@ -246,9 +273,8 @@ When done, output: TASK_COMPLETE: <result>"#;
             let tool_calls_opt = result["message"]["tool_calls"].as_array();
 
             if let Some(calls) = tool_calls_opt {
-                let calls_arr: &Vec<serde_json::Value> = calls;
-                if calls_arr.len() > 0 {
-                    for call in calls_arr {
+                if calls.len() > 0 {
+                    for call in calls {
                         let tool_name = call["function"]["name"].as_str().unwrap_or("");
                         let args_str = call["function"]["arguments"].to_string();
                         
@@ -411,7 +437,6 @@ struct ThinkRequest { prompt: String, max_turns: Option<usize> }
 #[derive(Deserialize)]
 struct SpawnRequest { name: String, system_prompt: Option<String> }
 
-// Agent management
 async fn list_agents(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Vec<Agent>>> {
     let agents = state.agents.read().await;
     Json(ApiResponse { success: true, data: Some(agents.values().cloned().collect()), error: None })
@@ -432,7 +457,6 @@ async fn spawn_agent(State(state): State<Arc<AgentOsState>>, Json(req): Json<Spa
     Json(ApiResponse { success: true, data: Some(id), error: None })
 }
 
-// Task queue
 async fn add_task(State(state): State<Arc<AgentOsState>>, Json(req): Json<TaskRequest>) -> Json<ApiResponse<Uuid>> {
     match state.add_task(req.description).await {
         Ok(id) => Json(ApiResponse { success: true, data: Some(id), error: None }),
@@ -453,7 +477,6 @@ async fn list_tasks(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<
     Json(ApiResponse { success: true, data: Some(tasks.values().cloned().collect()), error: None })
 }
 
-// Thinking
 async fn think(State(state): State<Arc<AgentOsState>>, Json(req): Json<ThinkRequest>) -> Json<ApiResponse<String>> {
     let agents = state.agents.read().await;
     let init_id = agents.keys().next().cloned();
@@ -469,7 +492,6 @@ async fn think(State(state): State<Arc<AgentOsState>>, Json(req): Json<ThinkRequ
     }
 }
 
-// Tool execution
 async fn execute_tool(State(state): State<Arc<AgentOsState>>, Json(req): Json<serde_json::Value>) -> Json<ApiResponse<serde_json::Value>> {
     let tool_name = req["tool"].as_str().unwrap_or("");
     let args = req["parameters"].to_string();
@@ -484,13 +506,11 @@ async fn list_tools(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<
     Json(ApiResponse { success: true, data: Some(tools.values().cloned().collect()), error: None })
 }
 
-// Messages
 async fn get_messages(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<Vec<AgentMessage>>> {
     let messages = state.messages.read().await;
     Json(ApiResponse { success: true, data: Some(messages.clone()), error: None })
 }
 
-// Process all pending tasks
 async fn process_all(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<String>> {
     let agents = state.agents.read().await;
     let init_id = agents.keys().next().cloned();
@@ -546,14 +566,24 @@ async fn root() -> Json<ApiResponse<String>> {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let ollama_url = std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://192.168.0.247:11434".to_string());
-    let model = std::env::var("MODEL").unwrap_or_else(|_| "qwen3.5:35b-a3b".to_string());
-    let storage_path = std::env::var("STORAGE_PATH").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/var/agent-os/storage"));
+    let args = Args::parse();
     
-    tokio::fs::create_dir_all(&storage_path).await?;
+    // Load config
+    let config_content = std::fs::read_to_string(&args.config)?;
+    let config: Config = serde_yaml::from_str(&config_content)?;
+    
+    tracing::info!("Loaded config from {}", args.config);
+    tracing::info!("Ollama: {} ({})", config.ollama.url, config.ollama.model);
+    tracing::info!("Tools: {}", config.tools.len());
 
-    let state = Arc::new(AgentOsState::new(&ollama_url, &model, storage_path));
-    state.init_tools().await;
+    tokio::fs::create_dir_all(&config.storage.path).await?;
+
+    let state = Arc::new(AgentOsState::new(&config));
+    state.init_tools(&config).await;
+
+    let addr = format!("{}:{}", config.server.host, config.server.port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!("Agent OS on http://{}", addr);
 
     let app = Router::new()
         .route("/", get(root))
@@ -568,9 +598,6 @@ async fn main() -> Result<()> {
         .route("/messages", get(get_messages))
         .route("/process", post(process_all))
         .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-    tracing::info!("Agent OS on http://0.0.0.0:8080 | Model: {}", model);
 
     axum::serve(listener, app).await?;
     Ok(())
