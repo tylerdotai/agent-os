@@ -17,7 +17,7 @@
   <h3 align="center">Agent OS</h3>
 
   <p align="center">
-    An operating system designed specifically for AI agents — with context as first-class citizens.
+    An operating system designed specifically for autonomous AI agents.
     <br />
     <a href="https://codeberg.org/tylerdotai/agent-os"><strong>Explore the docs »</strong></a>
     <br />
@@ -32,103 +32,60 @@
 <details>
   <summary>Table of Contents</summary>
   <ol>
-    <li><a href="#about-the-project">About The Project</a></li>
-    <li><a href="#why">Why</a></li>
+    <li><a href="#about">About</a></li>
+    <li><a href="#features">Features</a></li>
     <li><a href="#architecture">Architecture</a></li>
     <li><a href="#getting-started">Getting Started</a></li>
+    <li><a href="#configuration">Configuration</a></li>
+    <li><a href="#api">API Reference</a></li>
     <li><a href="#roadmap">Roadmap</a></li>
-    <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
-    <li><a href="#contact">Contact</a></li>
   </ol>
 </details>
 
-<!-- ABOUT THE PROJECT -->
-## About The Project
+<!-- ABOUT -->
+## About
 
-Agent OS is a purpose-built operating system for AI agents. Unlike traditional operating systems that manage hardware resources for general-purpose computing, Agent OS manages **context**, **capabilities**, and **identity** for autonomous agents.
+Agent OS is a purpose-built operating system for autonomous AI agents. Unlike traditional OSes that manage hardware, Agent OS manages **context**, **tools**, **identity**, and **communication** for agents.
 
-The core insight: **Context is the new RAM.**
-
-Traditional OS: manage hardware → run processes → isolate them → give them filesystem/network
-Agent OS: manage context + tools + identity → run thinking processes → isolate them → give them memory + actions
+**Core insight:** Context is the new RAM.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-<!-- WHY -->
-## Why
+<!-- FEATURES -->
+## Features
 
-Current AI agents run on top of general-purpose operating systems. This is like running a server application on a desktop OS — it works, but it's the wrong abstraction.
-
-**Problems we're solving:**
-- Context window limits are handled ad-hoc (in-memory string manipulation)
-- Tool access is inconsistent (different APIs for everything)
-- Agent identity is tied to the human running them
-- No native inter-agent communication (HTTP/REST is wrong)
-- Agent state doesn't survive reboots (we hack together memory files)
-
-**Agent OS treats these as kernel-level primitives.**
+- **TOML Configuration** — Declarative agent and tool definitions
+- **MCP Server** — Expose Agent OS as an MCP server (JSON-RPC 2.0)
+- **MCP Client** — Connect to external MCP tools (Qdrant, SearXNG)
+- **Tool Permissions** — Deny-by-default access control
+- **Private Inference** — Route sensitive tasks to local models
+- **Task Queue** — Async task processing with persistence
+- **Multi-Agent** — Spawn child agents, inter-agent messaging
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- ARCHITECTURE -->
 ## Architecture
 
-### Core Components
-
 ```
-┌────────────────────────────────────────────────────────────┐
-│                     Agent OS Userspace                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐ │
-│  │ Context  │  │   Tool   │  │ Identity │  │  Message │  │
-│  │ Manager  │  │ Registry │  │   Auth   │  │   Bus    │  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
-│       │             │             │             │          │
-│       └─────────────┴──────┬──────┴─────────────┘          │
-│                            │                                │
-│                    ┌───────┴───────┐                       │
-│                    │   Kernel      │                       │
-│                    │ (Persistence, │                       │
-│                    │  Scheduling)   │                       │
-│                    └───────┬───────┘                       │
-└────────────────────────────┼────────────────────────────────┘
-                             │
-┌────────────────────────────┼────────────────────────────────┐
-│                    Host OS / Container                      │
-│              (Linux, or bare metal)                        │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                   Agent OS Runtime                     │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │
+│  │   Context   │  │    Tool     │  │  Message   │  │
+│  │  Manager    │  │  Registry  │  │    Bus     │  │
+│  └─────────────┘  └─────────────┘  └─────────────┘  │
+│                         │                              │
+│                    ┌────┴────┐                       │
+│                    │  Ollama │  (qwen3.5:35b-a3b)    │
+│                    └─────────┘                       │
+└─────────────────────────────────────────────────────────┘
+         │
+    ┌────┴────┐
+    │  Titan   │  (192.168.0.247)
+    │ Proxmox │
+    └─────────┘
 ```
-
-### The Syscall Table
-
-| Syscall | Purpose |
-|---------|---------|
-| `context_allocate` | Set token budget for agent |
-| `context_add` | Add content to context |
-| `context_query` | Search archived context |
-| `tool_call` | Execute a tool |
-| `tool_register` | Register a new capability |
-| `agent_spawn` | Spawn a child agent |
-| `agent_send` | Message another agent |
-| `agent_checkpoint` | Save agent state to disk |
-| `agent_restore` | Restore from checkpoint |
-
-### Phase 1: Linux-Based (Current)
-- Agents run in Linux namespaces (isolation)
-- Custom context manager (token budgeting) as kernel module or userspace
-- Tool registry as syscall interface
-- Persistence via overlay filesystem
-
-### Phase 2: Unikernel
-- Port to seL4 or custom microkernel
-- Strip to bare minimum
-- Boot in <2 seconds
-- ISO that boots straight to agent
-
-### Phase 3: Bare Metal
-- Run on real hardware
-- Native GPU/context management
-- Direct hardware access
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -137,87 +94,131 @@ Current AI agents run on top of general-purpose operating systems. This is like 
 
 ### Prerequisites
 
-- **Titan** — AMD Ryzen AI MAX+ 395 at 192.168.0.247 (runs Proxmox)
-- Linux kernel development environment
+- **Titan** — AMD Ryzen AI MAX+ 395 at 192.168.0.247
+- Proxmox or Linux container
 
-### Development Setup
+### Quick Start
 
-1. Clone the repo
-   ```sh
-   git clone git@codeberg.org:tylerdotai/agent-os.git
-   cd agent-os
-   ```
+```bash
+# Clone
+git clone git@codeberg.org:tylerdotai/agent-os.git
+cd agent-os/runtime
 
-2. Set up development VM on Proxmox
-   ```sh
-   ./scripts/create-dev-vm.sh
-   ```
+# Build
+cargo build --release
 
-3. Build the kernel module
-   ```sh
-   cd kernel-module
-   make
-   sudo insmod agentos.ko
-   ```
+# Run
+OLLAMA_URL=http://192.168.0.247:11434 MODEL=qwen3.5:35b-a3b \
+  ./target/release/agent-os
+```
 
-4. Run the agent runtime
-   ```sh
-   cd runtime
-   cargo build --release
-   ./target/release/agent-os
-   ```
+### With Config
+
+```bash
+./target/release/agent-os --config agent-os.toml
+```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- CONFIGURATION -->
+## Configuration
+
+Create `agent-os.toml`:
+
+```toml
+[server]
+port = 8080
+
+[ollama]
+url = "http://192.168.0.247:11434"
+model = "qwen3.5:35b-a3b"
+
+# Private inference for sensitive tasks
+[ollama.private]
+url = "http://192.168.0.247:11434"
+model = "qwen3.5:35b-a3b"
+
+[[tools]]
+name = "get_time"
+description = "Get current timestamp"
+permissions = []
+
+[[tools]]
+name = "execute_command"
+description = "Run shell command"
+permissions = ["execute"]
+
+[permissions]
+allow_spawn = true
+allow_network = true
+allow_filesystem = true
+allow_execute = true
+```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- API -->
+## API Reference
+
+| Endpoint | Method | Description |
+|---------|--------|-------------|
+| `/` | GET | Health check |
+| `/agents` | GET/POST | List/spawn agents |
+| `/tasks` | GET/POST | List/add tasks |
+| `/tasks/next` | GET | Get next pending task |
+| `/think` | POST | Prompt agent |
+| `/execute` | POST | Execute tool |
+| `/tools` | GET | List tools |
+| `/messages` | GET | Get messages |
+| `/process` | POST | Process all pending tasks |
+
+### MCP Endpoints
+
+| Endpoint | Method | Description |
+|---------|--------|-------------|
+| `/mcp/tools` | GET | List tools (MCP format) |
+| `/mcp/execute` | POST | Execute tool (JSON-RPC 2.0) |
+| `/mcp/agents` | POST | List agents |
+| `/mcp/tasks` | GET/POST | List/add tasks |
+| `/mcp/discover` | POST | Discover MCP tools |
+| `/mcp/servers` | POST | Add MCP server |
+
+### Example: Execute Tool
+
+```bash
+curl -X POST http://localhost:8080/mcp/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "get_time",
+      "arguments": {}
+    }
+  }'
+```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- ROADMAP -->
 ## Roadmap
 
-### Phase 1: Linux-Based (Current) - Enhanced with GTC 2026 Insights
+### GTC 2026 Priorities
 
-- [x] Linux kernel module for context tracking
-- [x] Basic agent process (fork + cgroup isolation)
-- [x] Tool registry as userspace daemon
-- [x] Message bus (native agent-to-agent IPC)
-- [x] Persistence layer (checkpoint/restore)
-- [x] Agent permissions model
-
-### GTC 2026 Priorities (Inspired by NVIDIA NeMo/OpenShell)
-
-Based on NVIDIA's GTC 2026 announcements (NeMoClaw, OpenShell, Dynamo), we're prioritizing:
-
-- [ ] **YAML Workflow Config** — Declarative agent/tool definitions (like NeMo's workflow.yml)
-- [ ] **MCP Server Export** — Expose Agent OS as MCP server (NeMoClaw pattern)
-- [ ] **MCP Client** — Connect to external MCP tools (Qdrant, SearXNG on Titan)
-- [ ] **Tool Permissions** — Deny-by-default access control (OpenShell pattern)
-- [ ] **Private Inference Routing** — Route sensitive tasks to local models
-- [ ] **Observability** — OpenTelemetry tracing, profiling (NeMo pattern)
+- [x] **YAML Workflow Config** — Declarative agent/tool definitions
+- [x] **MCP Server Export** — Expose as MCP server
+- [x] **MCP Client** — Connect to external MCP tools
+- [x] **Tool Permissions** — Deny-by-default access control
+- [x] **Private Inference Routing** — Route sensitive to local
+- [ ] **Observability** — OpenTelemetry tracing
 - [ ] **Evaluation Framework** — Test agent task completion
 
-### Phase 2: Unikernel
-- [ ] Port to seL4 or custom microkernel
-- [ ] Strip to bare minimum
-- [ ] Boot in <2 seconds
-- [ ] ISO that boots straight to agent
+### Future
 
-### Phase 3: Bare Metal
-- [ ] Run on real hardware
-- [ ] Native GPU/context management
-- [ ] Direct hardware access
-
-See the [open issues](https://codeberg.org/tylerdotai/agent-os/issues) for a full list of proposed features.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-<!-- CONTRIBUTING -->
-## Contributing
-
-Contributions are what make the open source community amazing. If you'd like to contribute:
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+- [ ] Port to seL4 microkernel
+- [ ] Bare metal support
+- [ ] Native GPU scheduling
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -226,18 +227,13 @@ Contributions are what make the open source community amazing. If you'd like to 
 
 Distributed under the MIT License. See `LICENSE` for more information.
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+---
 
-<!-- CONTACT -->
-## Contact
-
-Tyler Delano - [@tylerdotai](https://x.com/tylerdotai) - tyler@tylerdelano.com
-
-Project Link: [https://codeberg.org/tylerdotai/agent-os](https://codeberg.org/tylerdotai/agent-os)
+**Built by Tyler Delano** — [@tylerdotai](https://x.com/tylerdotai)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-<!-- MARKDOWN LINKS & IMAGES -->
+<!-- MARKDOWN LINKS -->
 [contributors-shield]: https://img.shields.io/badge/contributors-1-orange?style=for-the-badge
 [contributors-url]: https://codeberg.org/tylerdotai/agent-os/-/graphs/contributors
 [forks-shield]: https://img.shields.io/badge/forks-1-black?style=for-the-badge
