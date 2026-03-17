@@ -574,6 +574,157 @@ async fn root() -> Json<ApiResponse<String>> {
     Json(ApiResponse { success: true, data: Some("Agent OS running".to_string()), error: None })
 }
 
+
+// ============================================================================
+// MCP (Model Context Protocol) Handlers
+// ============================================================================
+
+#[derive(Deserialize)]
+struct McpRequest {
+    jsonrpc: String,
+    id: Option<serde_json::Value>,
+    method: String,
+    params: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct McpResponse {
+    jsonrpc: String,
+    id: Option<serde_json::Value>,
+    result: Option<serde_json::Value>,
+    error: Option<McpError>,
+}
+
+#[derive(Serialize)]
+struct McpError {
+    code: i32,
+    message: String,
+}
+
+async fn mcp_list_tools(State(state): State<Arc<AgentOsState>>) -> Json<McpResponse> {
+    let tools = state.tools.read().await;
+    let tool_list: Vec<serde_json::Value> = tools.values().map(|t| {
+        serde_json::json!({
+            "name": t.name,
+            "description": t.description,
+            "inputSchema": t.parameters.as_ref().unwrap_or(&serde_json::json!({}))
+        })
+    }).collect();
+    
+    Json(McpResponse {
+        jsonrpc: "2.0".to_string(),
+        id: None,
+        result: Some(serde_json::json!({"tools": tool_list})),
+        error: None,
+    })
+}
+
+async fn mcp_execute(State(state): State<Arc<AgentOsState>>, Json(req): Json<McpRequest>) -> Json<McpResponse> {
+    let params = req.params.as_ref();
+    
+    if let Some(params_obj) = params {
+        let tool_name = params_obj.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        let arguments = params_obj.get("arguments").map(|a| a.to_string()).unwrap_or_default();
+        
+        match state.execute_tool(tool_name, &arguments).await {
+            Ok(result) => {
+                return Json(McpResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: req.id,
+                    result: Some(result),
+                    error: None,
+                });
+            }
+            Err(e) => {
+                return Json(McpResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: req.id,
+                    result: None,
+                    error: Some(McpError { code: -32603, message: e.to_string() }),
+                });
+            }
+        }
+    }
+    
+    Json(McpResponse {
+        jsonrpc: "2.0".to_string(),
+        id: req.id,
+        result: None,
+        error: Some(McpError { code: -32602, message: "Invalid params".to_string() }),
+    })
+}
+
+async fn mcp_list_agents(State(state): State<Arc<AgentOsState>>, Json(req): Json<McpRequest>) -> Json<McpResponse> {
+    let agents = state.agents.read().await;
+    let agent_list: Vec<serde_json::Value> = agents.values().map(|a| {
+        serde_json::json!({
+            "id": a.id,
+            "name": a.name,
+            "created_at": a.created_at
+        })
+    }).collect();
+    
+    Json(McpResponse {
+        jsonrpc: "2.0".to_string(),
+        id: req.id,
+        result: Some(serde_json::json!({"agents": agent_list})),
+        error: None,
+    })
+}
+
+async fn mcp_list_tasks(State(state): State<Arc<AgentOsState>>, Json(req): Json<McpRequest>) -> Json<McpResponse> {
+    let tasks = state.tasks.read().await;
+    let task_list: Vec<serde_json::Value> = tasks.values().map(|t| {
+        serde_json::json!({
+            "id": t.id,
+            "description": t.description,
+            "status": t.status
+        })
+    }).collect();
+    
+    Json(McpResponse {
+        jsonrpc: "2.0".to_string(),
+        id: req.id,
+        result: Some(serde_json::json!({"tasks": task_list})),
+        error: None,
+    })
+}
+
+async fn mcp_add_task(State(state): State<Arc<AgentOsState>>, Json(req): Json<McpRequest>) -> Json<McpResponse> {
+    let params = req.params.as_ref();
+    
+    if let Some(params_obj) = params {
+        let description = params_obj.get("description").and_then(|d| d.as_str()).unwrap_or("");
+        
+        match state.add_task(description.to_string()).await {
+            Ok(id) => {
+                return Json(McpResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: req.id,
+                    result: Some(serde_json::json!({"id": id})),
+                    error: None,
+                });
+            }
+            Err(e) => {
+                return Json(McpResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: req.id,
+                    result: None,
+                    error: Some(McpError { code: -32603, message: e.to_string() }),
+                });
+            }
+        }
+    }
+    
+    Json(McpResponse {
+        jsonrpc: "2.0".to_string(),
+        id: req.id,
+        result: None,
+        error: Some(McpError { code: -32602, message: "Invalid params".to_string() }),
+    })
+}
+
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -619,6 +770,14 @@ async fn main() -> Result<()> {
         .route("/tools", get(list_tools))
         .route("/messages", get(get_messages))
         .route("/process", post(process_all))
+        
+        // MCP (Model Context Protocol) endpoints
+        .route("/mcp/tools", get(mcp_list_tools))
+        .route("/mcp/execute", post(mcp_execute))
+        .route("/mcp/agents", get(mcp_list_agents))
+        .route("/mcp/tasks", get(mcp_list_tasks))
+        .route("/mcp/tasks", post(mcp_add_task))
+        
         .with_state(state);
 
     axum::serve(listener, app).await?;
