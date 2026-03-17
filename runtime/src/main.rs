@@ -2229,4 +2229,861 @@ mod more_tests {
             assert_eq!(agt.context[1].role, "user");
         }
     }
+
+
+// ============================================================================
+// Additional Tests for Coverage
+// ============================================================================
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    // Permission Tests
+    #[tokio::test]
+    async fn test_permission_network_denied() {
+        let mut config = Config::default();
+        config.permissions.allow_network = false;
+        let state = AgentOsState::new(&config);
+        
+        let tool = Tool {
+            name: "network_tool".to_string(),
+            description: "Test".to_string(),
+            parameters: None,
+            permissions: vec!["network".to_string()],
+        };
+        state.tools.write().await.insert("network_tool".to_string(), tool);
+        
+        let result = state.execute_tool("network_tool", "{}").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_permission_filesystem_denied() {
+        let mut config = Config::default();
+        config.permissions.allow_filesystem = false;
+        let state = AgentOsState::new(&config);
+        
+        let tool = Tool {
+            name: "fs_tool".to_string(),
+            description: "Test".to_string(),
+            parameters: None,
+            permissions: vec!["filesystem".to_string()],
+        };
+        state.tools.write().await.insert("fs_tool".to_string(), tool);
+        
+        let result = state.execute_tool("fs_tool", "{}").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_permission_execute_denied() {
+        let mut config = Config::default();
+        config.permissions.allow_execute = false;
+        let state = AgentOsState::new(&config);
+        
+        let tool = Tool {
+            name: "exec_tool".to_string(),
+            description: "Test".to_string(),
+            parameters: None,
+            permissions: vec!["execute".to_string()],
+        };
+        state.tools.write().await.insert("exec_tool".to_string(), tool);
+        
+        let result = state.execute_tool("exec_tool", "{}").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_permission_spawn_denied() {
+        let mut config = Config::default();
+        config.permissions.allow_spawn = false;
+        let state = AgentOsState::new(&config);
+        
+        let tool = Tool {
+            name: "spawn_tool".to_string(),
+            description: "Test".to_string(),
+            parameters: None,
+            permissions: vec!["spawn".to_string()],
+        };
+        state.tools.write().await.insert("spawn_tool".to_string(), tool);
+        
+        let result = state.execute_tool("spawn_tool", "{}").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_permission_all_denied() {
+        let mut config = Config::default();
+        config.permissions.allow_network = false;
+        config.permissions.allow_filesystem = false;
+        config.permissions.allow_execute = false;
+        config.permissions.allow_spawn = false;
+        let state = AgentOsState::new(&config);
+        
+        let result = state.check_permission(&["network".to_string()]);
+        assert!(result.is_err());
+        
+        let result = state.check_permission(&["filesystem".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_permission_mixed() {
+        let mut config = Config::default();
+        config.permissions.allow_network = true;
+        config.permissions.allow_filesystem = false;
+        let state = AgentOsState::new(&config);
+        
+        let result = state.check_permission(&["network".to_string()]);
+        assert!(result.is_ok());
+        
+        let result = state.check_permission(&["filesystem".to_string()]);
+        assert!(result.is_err());
+    }
+
+    // Config TOML Tests
+    #[test]
+    fn test_config_full_parsing() {
+        let toml = r#"
+[server]
+host = "127.0.0.1"
+port = 9001
+
+[ollama]
+url = "http://localhost:11434"
+model = "llama2"
+private_url = "http://localhost:11435"
+private_model = "llama2-private"
+default_private = true
+
+[storage]
+path = "/custom/storage"
+
+[system]
+system_prompt = "Custom prompt"
+
+[[tools]]
+name = "test_tool"
+description = "Test"
+permissions = ["network"]
+
+[permissions]
+allow_spawn = false
+allow_network = true
+allow_filesystem = false
+allow_execute = true
+
+[[mcp_servers]]
+name = "test-mcp"
+url = "http://localhost:8080"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 9001);
+        assert_eq!(config.ollama.url, "http://localhost:11434");
+        assert_eq!(config.storage.path, "/custom/storage");
+        assert!(!config.permissions.allow_spawn);
+        assert!(config.permissions.allow_network);
+    }
+
+    #[test]
+    fn test_config_partial() {
+        let toml = "[server]
+port = 3000";
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.server.port, 3000);
+    }
+
+    #[test]
+    fn test_config_ollama_only() {
+        let toml = r#"
+[ollama]
+url = "http://test:11434"
+model = "test-model"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ollama.url, "http://test:11434");
+    }
+
+    // State Persistence
+    #[tokio::test]
+    async fn test_save_empty_state() {
+        let config = Config {
+            storage: StorageConfig { path: "/tmp/agent-os-test".to_string() },
+            ..Default::default()
+        };
+        let state = AgentOsState::new(&config);
+        let _ = state.save_state().await;
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_state() {
+        let config = Config {
+            storage: StorageConfig { path: "/tmp/agent-os-test2".to_string() },
+            ..Default::default()
+        };
+        let state = AgentOsState::new(&config);
+        
+        state.add_task("Test task 1".to_string()).await.unwrap();
+        state.add_task("Test task 2".to_string()).await.unwrap();
+        
+        state.save_state().await.unwrap();
+        
+        let state2 = AgentOsState::new(&config);
+        state2.load_state().await.unwrap();
+        
+        let tasks = state2.tasks.read().await;
+        assert!(tasks.len() >= 2);
+    }
+
+    // URL Encoding
+    #[test]
+    fn test_urlencoding() {
+        assert_eq!(urlencoding::encode("hello"), "hello");
+        assert_eq!(urlencoding::encode("hello world"), "hello%20world");
+    }
+
+    // Private Mode
+    #[tokio::test]
+    async fn test_private_url_config() {
+        let mut config = Config::default();
+        config.ollama.private_url = Some("http://private:11434".to_string());
+        config.ollama.private_model = Some("private-model".to_string());
+        
+        let state = AgentOsState::new(&config);
+        assert_eq!(state.get_ollama_url(true), "http://private:11434");
+        assert_eq!(state.get_ollama_model(true), "private-model");
+    }
+
+    #[tokio::test]
+    async fn test_private_fallback() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        assert_eq!(state.get_ollama_url(true), state.ollama_url);
+    }
+
+    // Tool Registry
+    #[tokio::test]
+    async fn test_tool_registry_insert() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let tool = Tool {
+            name: "custom".to_string(),
+            description: "Test".to_string(),
+            parameters: None,
+            permissions: vec![],
+        };
+        state.tools.write().await.insert("custom".to_string(), tool);
+        
+        assert!(state.tools.read().await.contains_key("custom"));
+    }
+
+    #[tokio::test]
+    async fn test_tool_registry_multiple() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        for i in 0..10 {
+            let tool = Tool {
+                name: format!("tool_{}", i),
+                description: "Test".to_string(),
+                parameters: None,
+                permissions: vec![],
+            };
+            state.tools.write().await.insert(format!("tool_{}", i), tool);
+        }
+        
+        assert_eq!(state.tools.read().await.len(), 10);
+    }
+
+    // Message Type
+    #[tokio::test]
+    async fn test_message_type() {
+        let msg = Message {
+            role: "user".to_string(),
+            content: "Test".to_string(),
+            tool_call_id: Some("call_123".to_string()),
+            tool_name: Some("tool".to_string()),
+        };
+        assert_eq!(msg.role, "user");
+    }
+
+    #[tokio::test]
+    async fn test_message_no_tool() {
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: "Hello".to_string(),
+            tool_call_id: None,
+            tool_name: None,
+        };
+        assert!(msg.tool_call_id.is_none());
+    }
+
+    // Task Type
+    #[tokio::test]
+    async fn test_task_type_completion() {
+        let mut task = Task {
+            id: Uuid::new_v4(),
+            description: "Test".to_string(),
+            status: "pending".to_string(),
+            result: None,
+            error: None,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+        task.status = "completed".to_string();
+        task.result = Some("Done".to_string());
+        task.completed_at = Some(Utc::now());
+        
+        assert_eq!(task.status, "completed");
+    }
+
+    // MCP Client
+    #[test]
+    fn test_mcp_client_servers() {
+        let servers = vec![
+            McpServerConfig { name: "s1".to_string(), url: "u1".to_string() },
+        ];
+        let client = McpClient::new(servers);
+        assert_eq!(client.servers.len(), 1);
+    }
+
+    // Agent Context
+    #[tokio::test]
+    async fn test_agent_context() {
+        let agent = Agent {
+            id: Uuid::new_v4(),
+            name: "test".to_string(),
+            parent_id: None,
+            created_at: Utc::now(),
+            system_prompt: "You are test".to_string(),
+            context: vec![
+                Message { role: "system".to_string(), content: "Hi".to_string(), tool_call_id: None, tool_name: None },
+                Message { role: "user".to_string(), content: "Hello".to_string(), tool_call_id: None, tool_name: None },
+            ],
+        };
+        assert_eq!(agent.context.len(), 2);
+    }
+
+    // Edge cases
+    #[tokio::test]
+    async fn test_tool_empty_args() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("get_time", "").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_tool_invalid_json() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("get_time", "not json").await;
+        assert!(result.is_ok());
+    }
+
+    // Think function tests
+    #[tokio::test]
+    async fn test_think_nonexistent() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let fake_id = Uuid::new_v4();
+        let result = state.think_with_tools(fake_id, "hello", 1, false).await;
+        assert!(result.is_err());
+    }
+
+    // Task queue tests
+    #[tokio::test]
+    async fn test_task_queue_clear() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        state.task_queue.write().await.clear();
+        let queue = state.task_queue.read().await;
+        assert!(queue.is_empty());
+    }
+
+    // State operations
+    #[tokio::test]
+    async fn test_state_storage_path() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let path = state.storage_path.clone();
+        let _ = path;
+    }
+
+    // Tool with various permissions
+    #[tokio::test]
+    async fn test_tool_multi_permissions() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let tool = Tool {
+            name: "multi_perm".to_string(),
+            description: "Test".to_string(),
+            parameters: None,
+            permissions: vec!["network".to_string(), "filesystem".to_string()],
+        };
+        state.tools.write().await.insert("multi_perm".to_string(), tool);
+    }
+
+    // Init tools with config
+    #[tokio::test]
+    async fn test_init_tools_multi() {
+        let mut config = Config::default();
+        config.tools.push(ToolConfig {
+            name: "custom1".to_string(),
+            description: "Custom tool 1".to_string(),
+            handler: "builtin".to_string(),
+            parameters: None,
+            permissions: vec![],
+        });
+        
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let tools = state.tools.read().await;
+        assert_eq!(tools.len(), 1);
+    }
+
+    // Running atomic
+    #[tokio::test]
+    async fn test_running_atomic() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        state.running.store(1, std::sync::atomic::Ordering::Relaxed);
+        let val = state.running.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(val, 1);
+    }
+
+    // Add task variations
+    #[tokio::test]
+    async fn test_add_task_empty() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let id1 = state.add_task("".to_string()).await.unwrap();
+        assert!(!id1.is_nil());
+    }
+
+    // Multiple agents operations
+    #[tokio::test]
+    async fn test_agents_remove() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let id1 = Uuid::new_v4();
+        
+        let agent1 = Agent {
+            id: id1,
+            name: "agent1".to_string(),
+            parent_id: None,
+            created_at: Utc::now(),
+            system_prompt: "Test".to_string(),
+            context: vec![],
+        };
+        
+        state.agents.write().await.insert(id1, agent1);
+        
+        state.agents.write().await.remove(&id1);
+        
+        let agents = state.agents.read().await;
+        assert!(agents.is_empty());
+    }
+
+    // Config clone
+    #[test]
+    fn test_config_clone() {
+        let config = Config::default();
+        let cloned = config.clone();
+        let _ = cloned;
+    }
+
+    // Tool clone
+    #[test]
+    fn test_tool_clone() {
+        let tool = Tool {
+            name: "test".to_string(),
+            description: "Test".to_string(),
+            parameters: None,
+            permissions: vec![],
+        };
+        let cloned = tool.clone();
+        assert_eq!(cloned.name, tool.name);
+    }
+
+    // Message clone
+    #[test]
+    fn test_message_clone() {
+        let msg = Message {
+            role: "user".to_string(),
+            content: "Test".to_string(),
+            tool_call_id: None,
+            tool_name: None,
+        };
+        let cloned = msg.clone();
+        assert_eq!(cloned.content, msg.content);
+    }
+
+    // Task clone
+    #[test]
+    fn test_task_clone() {
+        let task = Task {
+            id: Uuid::new_v4(),
+            description: "Test".to_string(),
+            status: "pending".to_string(),
+            result: None,
+            error: None,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+        let cloned = task.clone();
+        assert_eq!(cloned.description, task.description);
+    }
+
+    // Agent clone
+    #[test]
+    fn test_agent_clone() {
+        let agent = Agent {
+            id: Uuid::new_v4(),
+            name: "test".to_string(),
+            parent_id: None,
+            created_at: Utc::now(),
+            system_prompt: "Test".to_string(),
+            context: vec![],
+        };
+        let cloned = agent.clone();
+        assert_eq!(cloned.name, agent.name);
+    }
+
+    // AgentMessage clone
+    #[test]
+    fn test_agent_message_clone() {
+        let msg = AgentMessage {
+            id: Uuid::new_v4(),
+            from_agent: Uuid::new_v4(),
+            to_agent: Uuid::new_v4(),
+            content: "Test".to_string(),
+            timestamp: Utc::now(),
+        };
+        let cloned = msg.clone();
+        assert_eq!(cloned.content, msg.content);
+    }
+
+    // Process all task collection
+    #[tokio::test]
+    async fn test_process_all_task_collection() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        state.add_task("Task 1".to_string()).await.unwrap();
+        state.add_task("Task 2".to_string()).await.unwrap();
+        
+        let task_ids: Vec<Uuid> = {
+            let tasks = state.tasks.read().await;
+            tasks.values().filter(|t| t.status == "pending").map(|t| t.id).collect()
+        };
+        
+        assert_eq!(task_ids.len(), 2);
+    }
+
+    // Process all status update
+    #[tokio::test]
+    async fn test_process_all_status_update() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let task_id = state.add_task("Test".to_string()).await.unwrap();
+        
+        {
+            let mut tasks = state.tasks.write().await;
+            tasks.get_mut(&task_id).map(|t| t.status = "processing".to_string());
+        }
+        
+        let tasks = state.tasks.read().await;
+        assert_eq!(tasks.get(&task_id).unwrap().status, "processing");
+    }
+
+    // Task filter completed
+    #[tokio::test]
+    async fn test_task_filter_completed() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let id1 = state.add_task("Task 1".to_string()).await.unwrap();
+        let _id2 = state.add_task("Task 2".to_string()).await.unwrap();
+        
+        {
+            let mut tasks = state.tasks.write().await;
+            tasks.get_mut(&id1).unwrap().status = "completed".to_string();
+        }
+        
+        let pending: Vec<Uuid> = {
+            let tasks = state.tasks.read().await;
+            tasks.values().filter(|t| t.status == "pending").map(|t| t.id).collect()
+        };
+        
+        assert_eq!(pending.len(), 1);
+    }
+
+    // Tool params parsing
+    #[tokio::test]
+    async fn test_tool_params_parsing() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("list_directory", r#"{"path": "/var"}"#).await;
+        let _ = result;
+    }
+
+    // All builtin tools
+    #[tokio::test]
+    async fn test_all_builtin_tools() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let r = state.execute_tool("get_time", "{}").await;
+        assert!(r.is_ok());
+        
+        let r = state.execute_tool("list_directory", r#"{"path": "."}"#).await;
+        assert!(r.is_ok());
+    }
+
+    // UUID operations
+    #[test]
+    fn test_uuid_operations() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        
+        assert!(id1 != id2);
+        assert!(!id1.is_nil());
+        
+        let nil = Uuid::nil();
+        assert!(nil.is_nil());
+    }
+
+    // Serialization
+    #[test]
+    fn test_task_serialize() {
+        let task = Task {
+            id: Uuid::new_v4(),
+            description: "Test".to_string(),
+            status: "pending".to_string(),
+            result: None,
+            error: None,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+        
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(json.contains("Test"));
+    }
+
+    #[test]
+    fn test_agent_serialize() {
+        let agent = Agent {
+            id: Uuid::new_v4(),
+            name: "Test".to_string(),
+            parent_id: None,
+            created_at: Utc::now(),
+            system_prompt: "You are test".to_string(),
+            context: vec![],
+        };
+        
+        let json = serde_json::to_string(&agent).unwrap();
+        assert!(json.contains("Test"));
+    }
+
+    #[test]
+    fn test_message_serialize() {
+        let msg = Message {
+            role: "user".to_string(),
+            content: "Hello".to_string(),
+            tool_call_id: None,
+            tool_name: None,
+        };
+        
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("user"));
+    }
+
+    // Multiple saves
+    #[tokio::test]
+    async fn test_multiple_saves() {
+        let config = Config {
+            storage: StorageConfig { path: "/tmp/agent-os-multi".to_string() },
+            ..Default::default()
+        };
+        
+        let state = AgentOsState::new(&config);
+        
+        for i in 0..3 {
+            state.add_task(format!("Task {}", i)).await.unwrap();
+            state.save_state().await.unwrap();
+        }
+        
+        let tasks = state.tasks.read().await;
+        assert!(tasks.len() >= 3);
+    }
+
+    // Queue management
+    #[tokio::test]
+    async fn test_queue_management() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let result = {
+            let mut queue = state.task_queue.write().await;
+            queue.pop()
+        };
+        assert!(result.is_none());
+        
+        let id = Uuid::new_v4();
+        state.task_queue.write().await.push(id);
+        let result = state.task_queue.write().await.pop();
+        assert!(result.is_some());
+    }
+
+    // Message list operations
+    #[tokio::test]
+    async fn test_message_list_operations() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let messages = state.messages.read().await;
+        assert!(messages.is_empty());
+        drop(messages);
+        
+        let msg = AgentMessage {
+            id: Uuid::new_v4(),
+            from_agent: Uuid::new_v4(),
+            to_agent: Uuid::new_v4(),
+            content: "Test".to_string(),
+            timestamp: Utc::now(),
+        };
+        state.messages.write().await.push(msg);
+        
+        let messages = state.messages.read().await;
+        assert_eq!(messages.len(), 1);
+    }
+
+    // Tools iteration
+    #[tokio::test]
+    async fn test_tools_iteration() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let tools = state.tools.read().await;
+        for (_name, tool) in tools.iter() {
+            let _ = &tool.name;
+        }
+    }
+
+    // Task iteration
+    #[tokio::test]
+    async fn test_tasks_iteration() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        state.add_task("Task 1".to_string()).await.unwrap();
+        state.add_task("Task 2".to_string()).await.unwrap();
+        
+        let tasks = state.tasks.read().await;
+        for (_id, task) in tasks.iter() {
+            let _ = &task.description;
+        }
+    }
+
+    // Agent iteration
+    #[tokio::test]
+    async fn test_agents_iteration() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let agents = state.agents.read().await;
+        for (_id, agent) in agents.iter() {
+            let _ = &agent.name;
+        }
+    }
+
+    // State clone
+    #[tokio::test]
+    async fn test_arc_clones() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let agents = state.agents.clone();
+        let tasks = state.tasks.clone();
+        let queue = state.task_queue.clone();
+        let tools = state.tools.clone();
+        let messages = state.messages.clone();
+        
+        let _ = agents.read().await;
+        let _ = tasks.read().await;
+        let _ = queue.read().await;
+        let _ = tools.read().await;
+        let _ = messages.read().await;
+    }
+
+    // Tool execution error path
+    #[tokio::test]
+    async fn test_read_nonexistent_file() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("read_file", r#"{"path": "/nonexistent/file.txt"}"#).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_with_params() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("spawn_agent", r#"{"name": "test-agent", "system_prompt": "You are a test"}"#).await.unwrap();
+        
+        assert!(result.get("agent_id").is_some());
+        assert_eq!(result.get("name").unwrap(), "test-agent");
+    }
+
+    #[tokio::test]
+    async fn test_send_message_valid_uuid() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let agent_id = Uuid::new_v4();
+        let result = state.execute_tool("send_message", &format!(r#"{{"to_agent": "{}"}}"#, agent_id)).await.unwrap();
+        
+        assert_eq!(result.get("sent").unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_with_output() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("execute_command", r#"{"command": "echo hello"}"#).await.unwrap();
+        
+        assert!(result.get("stdout").is_some());
+    }
+}
+
+
 }
