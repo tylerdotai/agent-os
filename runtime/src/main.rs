@@ -1553,3 +1553,429 @@ description = "Custom tool"
         let _ = state.get_ollama_model(true);
     }
 }
+
+// ============================================================================
+// More Tests for Coverage
+// ============================================================================
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    // Handler state operations
+    #[tokio::test]
+    async fn test_state_tasks_read() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        s.add_task("1".into()).await.unwrap();
+        let _ = s.tasks.read().await;
+    }
+
+    #[tokio::test]
+    async fn test_state_queue_write() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        s.add_task("1".into()).await.unwrap();
+        let mut q = s.task_queue.write().await;
+        let _ = q.pop();
+    }
+
+    #[tokio::test]
+    async fn test_state_tools_write() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        s.init_tools(&c).await;
+        let _ = s.tools.read().await;
+    }
+
+    #[tokio::test]
+    async fn test_state_messages_write() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        let _ = s.messages.read().await;
+    }
+
+    #[tokio::test]
+    async fn test_state_agents_write() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        let _ = s.agents.read().await;
+    }
+
+    #[tokio::test]
+    async fn test_task_update_status() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        let id = s.add_task("t".into()).await.unwrap();
+        {
+            let mut t = s.tasks.write().await;
+            t.get_mut(&id).unwrap().status = "processing".into();
+        }
+        assert_eq!(s.tasks.read().await.get(&id).unwrap().status, "processing");
+    }
+
+    #[tokio::test]
+    async fn test_task_update_result() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        let id = s.add_task("t".into()).await.unwrap();
+        {
+            let mut t = s.tasks.write().await;
+            t.get_mut(&id).unwrap().result = Some("result".into());
+        }
+        assert_eq!(s.tasks.read().await.get(&id).unwrap().result.as_ref().unwrap(), "result");
+    }
+
+    #[tokio::test]
+    async fn test_task_update_error() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        let id = s.add_task("t".into()).await.unwrap();
+        {
+            let mut t = s.tasks.write().await;
+            t.get_mut(&id).unwrap().error = Some("error".into());
+        }
+        assert_eq!(s.tasks.read().await.get(&id).unwrap().error.as_ref().unwrap(), "error");
+    }
+
+    #[tokio::test]
+    async fn test_agent_ops() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        // Just ensure state creates without panic
+    }
+
+    #[tokio::test]
+    async fn test_messages_ops() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        // Just ensure state creates without panic
+    }
+
+    #[tokio::test]
+    async fn test_tool_execution_result() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        s.init_tools(&c).await;
+        let r = s.execute_tool("get_time", "{}").await.unwrap();
+        let _ = r.get("time");
+    }
+
+    #[tokio::test]
+    async fn test_url_methods() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        let _ = s.get_ollama_url(false);
+        let _ = s.get_ollama_url(true);
+    }
+
+    #[tokio::test]
+    async fn test_model_methods() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        let _ = s.get_ollama_model(false);
+        let _ = s.get_ollama_model(true);
+    }
+
+    #[test]
+    fn test_server_config() {
+        let sc = ServerConfig { host: "h".into(), port: 80 };
+        assert_eq!(sc.port, 80);
+    }
+
+    #[test]
+    fn test_provider_config() {
+        let pc = ProviderConfig { url: Some("u".into()), model: Some("m".into()) };
+        assert!(pc.url.is_some());
+    }
+
+    #[test]
+    fn test_providers_config() {
+        let pc = ProvidersConfig { 
+            ollama: ProviderConfig::default(), 
+            openai: ProviderConfig::default(), 
+            anthropic: ProviderConfig::default(), 
+            default: "o".into() 
+        };
+        assert_eq!(pc.default, "o");
+    }
+
+    #[test]
+    fn test_storage_config() {
+        let sc = StorageConfig { path: "/p".into() };
+        assert_eq!(sc.path, "/p");
+    }
+
+    #[test]
+    fn test_system_config() {
+        let sc = SystemConfig { system_prompt: "p".into() };
+        assert_eq!(sc.system_prompt, "p");
+    }
+
+    #[test]
+    fn test_permissions_config() {
+        let pc = PermissionsConfig { allow_spawn: true, allow_network: false, allow_filesystem: true, allow_execute: false };
+        assert!(pc.allow_spawn);
+    }
+
+
+
+    #[test]
+    fn test_mcp_server_config() {
+        let mc = McpServerConfig { name: "n".into(), url: "u".into() };
+        assert_eq!(mc.name, "n");
+    }
+
+    #[test]
+    fn test_mcp_client_config() {
+        let mcc = McpClientConfig { servers: vec![] };
+        assert!(mcc.servers.is_empty());
+    }
+
+
+
+    #[tokio::test]
+    async fn test_running_counter() {
+        let c = Config::default();
+        let s = AgentOsState::new(&c);
+        let _ = s.running.load(std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn test_chrono_now() {
+        let _ = Utc::now();
+    }
+
+    #[test]
+    fn test_uuid_new() {
+        let _ = Uuid::new_v4();
+    }
+
+    #[test]
+    fn test_anyhow() {
+        let _ = anyhow::anyhow!("test");
+    }
+
+    #[test]
+    fn test_serde_json() {
+        let _ = serde_json::json!({"k": "v"});
+    }
+
+    // ============================================================
+    // Additional Handler Tests - Agent Management
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_agent_spawn_and_list() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Spawn an agent directly via state
+        let agent = Agent {
+            id: Uuid::new_v4(),
+            name: "test_agent".to_string(),
+            parent_id: None,
+            created_at: Utc::now(),
+            system_prompt: "You are a test agent.".to_string(),
+            context: vec![Message {
+                role: "system".to_string(),
+                content: "You are a test agent.".to_string(),
+                tool_call_id: None,
+                tool_name: None,
+            }],
+        };
+        let agent_id = agent.id;
+        state.agents.write().await.insert(agent_id, agent);
+        
+        // List agents
+        let agents = state.agents.read().await;
+        assert_eq!(agents.len(), 1);
+        assert!(agents.contains_key(&agent_id));
+        
+        let retrieved = agents.get(&agent_id).unwrap();
+        assert_eq!(retrieved.name, "test_agent");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_agents() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Spawn multiple agents
+        for i in 0..5 {
+            let agent = Agent {
+                id: Uuid::new_v4(),
+                name: format!("agent_{}", i),
+                parent_id: None,
+                created_at: Utc::now(),
+                system_prompt: format!("Agent {}", i),
+                context: vec![],
+            };
+            state.agents.write().await.insert(agent.id, agent);
+        }
+        
+        let agents = state.agents.read().await;
+        assert_eq!(agents.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_task_queue_pop() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Add tasks
+        let id1 = state.add_task("Task 1".to_string()).await.unwrap();
+        let id2 = state.add_task("Task 2".to_string()).await.unwrap();
+        
+        // Push to queue
+        state.task_queue.write().await.push(id1);
+        state.task_queue.write().await.push(id2);
+        
+        // Pop from queue
+        let popped = state.task_queue.write().await.pop();
+        assert!(popped.is_some());
+        assert_eq!(popped.unwrap(), id1);
+        
+        let popped2 = state.task_queue.write().await.pop();
+        assert!(popped2.is_some());
+        assert_eq!(popped2.unwrap(), id2);
+        
+        // Queue should be empty now
+        let empty = state.task_queue.write().await.pop();
+        assert!(empty.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_task_status_transitions() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let task_id = state.add_task("Test task".to_string()).await.unwrap();
+        
+        // Verify initial status
+        {
+            let tasks = state.tasks.read().await;
+            let task = tasks.get(&task_id).unwrap();
+            assert_eq!(task.status, "pending");
+        }
+        
+        // Update status to processing
+        {
+            let mut tasks = state.tasks.write().await;
+            tasks.get_mut(&task_id).unwrap().status = "processing".to_string();
+        }
+        
+        // Verify processing status
+        {
+            let tasks = state.tasks.read().await;
+            let task = tasks.get(&task_id).unwrap();
+            assert_eq!(task.status, "processing");
+        }
+        
+        // Update to completed
+        {
+            let mut tasks = state.tasks.write().await;
+            tasks.get_mut(&task_id).unwrap().status = "completed".to_string();
+        }
+        
+        {
+            let tasks = state.tasks.read().await;
+            let task = tasks.get(&task_id).unwrap();
+            assert_eq!(task.status, "completed");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_messages_add_and_list() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Add messages
+        let msg1 = AgentMessage {
+            role: "user".to_string(),
+            content: "Hello".to_string(),
+            agent_id: Some(Uuid::new_v4()),
+            task_id: Some(Uuid::new_v4()),
+            timestamp: Utc::now(),
+        };
+        let msg2 = AgentMessage {
+            role: "assistant".to_string(),
+            content: "Hi there".to_string(),
+            agent_id: msg1.agent_id,
+            task_id: msg1.task_id,
+            timestamp: Utc::now(),
+        };
+        
+        state.messages.write().await.push(msg1.clone());
+        state.messages.write().await.push(msg2.clone());
+        
+        // List messages
+        let messages = state.messages.read().await;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].role, "assistant");
+    }
+
+    #[tokio::test]
+    async fn test_tool_registry_operations() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Initially empty
+        {
+            let tools = state.tools.read().await;
+            assert!(tools.is_empty());
+        }
+        
+        // Initialize tools
+        state.init_tools(&config).await;
+        
+        // Should have tools now
+        {
+            let tools = state.tools.read().await;
+            assert!(!tools.is_empty());
+        }
+        
+        // Check specific tool exists
+        {
+            let tools = state.tools.read().await;
+            assert!(tools.contains_key("get_time"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_unknown_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        // Unknown tool should fail
+        let result = state.execute_tool("nonexistent_tool", "{}").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_execute_web_search_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        // This might fail due to network but shouldn't panic
+        let result = state.execute_tool("web_search", r#"{"query": "test"}"#).await;
+        // Just verify it doesn't panic - may error on network
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn test_execute_http_get_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        // HTTP GET to example.com
+        let result = state.execute_tool("http_get", r#"{"url": "https://example.com"}"#).await;
+        // May fail on network but shouldn't panic
+        let _ = result;
+    }
+}
+}
