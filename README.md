@@ -172,14 +172,37 @@ Current AI agents run on top of general-purpose operating systems. This is like 
 <!-- ROADMAP -->
 ## Roadmap
 
+### Phase 1: Linux-Based (Current) - Enhanced with GTC 2026 Insights
+
 - [x] Linux kernel module for context tracking
 - [x] Basic agent process (fork + cgroup isolation)
 - [x] Tool registry as userspace daemon
 - [x] Message bus (native agent-to-agent IPC)
 - [x] Persistence layer (checkpoint/restore)
 - [x] Agent permissions model
-- [ ] Unikernel port (seL4)
-- [ ] Bare metal support
+
+### GTC 2026 Priorities (Inspired by NVIDIA NeMo/OpenShell)
+
+Based on NVIDIA's GTC 2026 announcements (NeMoClaw, OpenShell, Dynamo), we're prioritizing:
+
+- [ ] **YAML Workflow Config** — Declarative agent/tool definitions (like NeMo's workflow.yml)
+- [ ] **MCP Server Export** — Expose Agent OS as MCP server (NeMoClaw pattern)
+- [ ] **MCP Client** — Connect to external MCP tools (Qdrant, SearXNG on Titan)
+- [ ] **Tool Permissions** — Deny-by-default access control (OpenShell pattern)
+- [ ] **Private Inference Routing** — Route sensitive tasks to local models
+- [ ] **Observability** — OpenTelemetry tracing, profiling (NeMo pattern)
+- [ ] **Evaluation Framework** — Test agent task completion
+
+### Phase 2: Unikernel
+- [ ] Port to seL4 or custom microkernel
+- [ ] Strip to bare minimum
+- [ ] Boot in <2 seconds
+- [ ] ISO that boots straight to agent
+
+### Phase 3: Bare Metal
+- [ ] Run on real hardware
+- [ ] Native GPU/context management
+- [ ] Direct hardware access
 
 See the [open issues](https://codeberg.org/tylerdotai/agent-os/issues) for a full list of proposed features.
 
