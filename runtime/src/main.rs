@@ -28,7 +28,7 @@ pub struct Config {
     #[serde(default)]
     pub ollama: OllamaConfig,
     #[serde(default)]
-    pub cloud: CloudConfig,
+    pub providers: ProvidersConfig,
     #[serde(default)]
     pub storage: StorageConfig,
     #[serde(default)]
@@ -53,14 +53,26 @@ fn default_host() -> String { "0.0.0.0".to_string() }
 fn default_port() -> u16 { 8080 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct CloudConfig {
+pub struct ProviderConfig {
     #[serde(default)]
-    pub api_url: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
+    pub url: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
 }
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ProvidersConfig {
+    #[serde(default)]
+    pub ollama: ProviderConfig,
+    #[serde(default)]
+    pub openai: ProviderConfig,
+    #[serde(default)]
+    pub anthropic: ProviderConfig,
+    #[serde(default = "default_provider")]
+    pub default: String,
+}
+
+fn default_provider() -> String { "ollama".to_string() }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct OllamaConfig {
@@ -290,9 +302,9 @@ pub struct AgentOsState {
     pub running: Arc<std::sync::atomic::AtomicU64>,
     pub permissions: PermissionsConfig,
     pub mcp_client: McpClient,
-    pub cloud_api_url: Option<String>,
-    pub cloud_api_key: Option<String>,
-    pub cloud_model: Option<String>,
+    pub providers: ProvidersConfig,
+    pub openai_key: Option<String>,
+    pub anthropic_key: Option<String>,
 }
 
 impl AgentOsState {
@@ -428,9 +440,9 @@ impl AgentOsState {
             running: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             permissions: config.permissions.clone(),
             mcp_client: McpClient::new(config.mcp_servers.clone()),
-            cloud_api_url: config.cloud.api_url.clone(),
-            cloud_api_key: std::env::var("OPENAI_API_KEY").ok().or(config.cloud.api_key.clone()),
-            cloud_model: config.cloud.model.clone(),
+            providers: config.providers.clone(),
+            openai_key: std::env::var("OPENAI_API_KEY").ok(),
+            anthropic_key: std::env::var("ANTHROPIC_API_KEY").ok(),
         }
     }
 
@@ -501,14 +513,14 @@ impl AgentOsState {
                 "stream": false
             });
             
-            // Check if cloud API is configured
-            let use_cloud = self.cloud_api_url.is_some() && self.cloud_api_key.is_some();
+            // Determine which provider to use
+            let default_provider = &self.providers.default;
             
-            let result = if use_cloud {
-                // Use cloud API (OpenAI-compatible)
-                let url = self.cloud_api_url.as_ref().unwrap();
-                let model = self.cloud_model.as_deref().unwrap_or("gpt-4o");
-                let api_key = self.cloud_api_key.as_ref().unwrap();
+            let result = if default_provider == "openai" && self.openai_key.is_some() {
+                // Use OpenAI
+                let url = self.providers.openai.url.as_deref().unwrap_or("https://api.openai.com/v1");
+                let model = self.providers.openai.model.as_deref().unwrap_or("gpt-4o");
+                let api_key = self.openai_key.as_ref().unwrap();
                 
                 let cloud_request = serde_json::json!({
                     "model": model,
@@ -524,6 +536,29 @@ impl AgentOsState {
                     .await?;
                 
                 resp.json::<serde_json::Value>().await?
+            } else if default_provider == "anthropic" && self.anthropic_key.is_some() {
+                // Use Anthropic (different API format)
+                let url = self.providers.anthropic.url.as_deref().unwrap_or("https://api.anthropic.com");
+                let model = self.providers.anthropic.model.as_deref().unwrap_or("claude-3-5-sonnet-20241022");
+                let api_key = self.anthropic_key.as_ref().unwrap();
+                
+                let cloud_request = serde_json::json!({
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": 4096,
+                });
+                
+                let resp = client.post(format!("{}/v1/messages", url))
+                    .header("x-api-key", api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("Content-Type", "application/json")
+                    .json(&cloud_request)
+                    .send()
+                    .await?;
+                
+                // Anthropic returns differently
+                let raw = resp.json::<serde_json::Value>().await?;
+                serde_json::json!({"message": {"content": raw.get("content").and_then(|c| c.as_array()).and_then(|a| a.first()).and_then(|b| b.get("text")).map(|t| t.to_string()).unwrap_or_default()}})
             } else {
                 // Use Ollama
                 let request = serde_json::json!({
@@ -1090,7 +1125,7 @@ async fn main() -> Result<()> {
         Config {
             server: ServerConfig { host: "0.0.0.0".to_string(), port: 8080 },
             ollama: OllamaConfig { url: "http://192.168.0.247:11434".to_string(), model: "qwen3.5:35b-a3b".to_string(), private_url: None, private_model: None, default_private: false },
-            cloud: CloudConfig { api_url: None, api_key: None, model: None },
+            providers: ProvidersConfig { ..Default::default() },
             storage: StorageConfig { path: "/var/agent-os/storage".to_string() },
             system: SystemConfig { system_prompt: "You are an autonomous AI agent.".to_string() },
             tools: vec![],

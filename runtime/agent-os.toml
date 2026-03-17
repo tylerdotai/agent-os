@@ -9,11 +9,21 @@ model = "qwen3.5:35b-a3b"
 # provider: "ollama" (default), "openai", "anthropic"
 provider = "ollama"
 
-# For cloud APIs - leave empty to use Ollama
-[cloud]
-api_url = "https://api.openai.com/v1"
-api_key = ""  # Set OPENAI_API_KEY env var
-model = "gpt-4o"
+# Model providers - keys from environment variables
+[providers.ollama]
+url = "http://192.168.0.247:11434"
+model = "qwen3.5:35b-a3b"
+
+[providers.openai]
+url = "https://api.openai.com/v1"
+# Key from OPENAI_API_KEY env var
+
+[providers.anthropic]
+url = "https://api.anthropic.com"
+# Key from ANTHROPIC_API_KEY env var
+
+# Default provider
+default = "ollama"
 
 [storage]
 path = "/var/agent-os/storage"
