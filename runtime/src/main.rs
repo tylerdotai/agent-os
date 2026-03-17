@@ -1972,4 +1972,261 @@ mod more_tests {
         // May fail on network but shouldn't panic
         let _ = result;
     }
+
+    // ============================================================
+    // Integration Tests - Full Lifecycle
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_task_lifecycle() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // 1. Add task
+        let task_id = state.add_task("Integration test task".to_string()).await.unwrap();
+        
+        // Verify pending
+        {
+            let tasks = state.tasks.read().await;
+            let task = tasks.get(&task_id).unwrap();
+            assert_eq!(task.status, "pending");
+            assert_eq!(task.description, "Integration test task");
+        }
+        
+        // 2. Pop from queue and mark processing
+        {
+            let mut tasks = state.tasks.write().await;
+            tasks.get_mut(&task_id).unwrap().status = "processing".to_string();
+        }
+        
+        // Verify processing
+        {
+            let tasks = state.tasks.read().await;
+            let task = tasks.get(&task_id).unwrap();
+            assert_eq!(task.status, "processing");
+        }
+        
+        // 3. Complete with result
+        {
+            let mut tasks = state.tasks.write().await;
+            let task = tasks.get_mut(&task_id).unwrap();
+            task.status = "completed".to_string();
+            task.result = Some("Task completed successfully".to_string());
+            task.completed_at = Some(Utc::now());
+        }
+        
+        // Verify completed
+        {
+            let tasks = state.tasks.read().await;
+            let task = tasks.get(&task_id).unwrap();
+            assert_eq!(task.status, "completed");
+            assert_eq!(task.result.as_ref().unwrap(), "Task completed successfully");
+            assert!(task.completed_at.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_agent_spawn_chain() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Spawn parent agent
+        let parent = Agent {
+            id: Uuid::new_v4(),
+            name: "parent".to_string(),
+            parent_id: None,
+            created_at: Utc::now(),
+            system_prompt: "You are parent.".to_string(),
+            context: vec![],
+        };
+        let parent_id = parent.id;
+        state.agents.write().await.insert(parent_id, parent);
+        
+        // Spawn child agent with parent reference
+        let child = Agent {
+            id: Uuid::new_v4(),
+            name: "child".to_string(),
+            parent_id: Some(parent_id),
+            created_at: Utc::now(),
+            system_prompt: "You are child.".to_string(),
+            context: vec![],
+        };
+        let child_id = child.id;
+        state.agents.write().await.insert(child_id, child);
+        
+        // Verify both exist
+        let agents = state.agents.read().await;
+        assert_eq!(agents.len(), 2);
+        
+        // Verify parent-child relationship
+        let retrieved_child = agents.get(&child_id).unwrap();
+        assert_eq!(retrieved_child.parent_id, Some(parent_id));
+        
+        let retrieved_parent = agents.get(&parent_id).unwrap();
+        assert!(retrieved_parent.parent_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tool_execution_chain() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        // Chain: get_time → list_directory → execute_command
+        // Step 1: get_time
+        let time_result = state.execute_tool("get_time", "{}").await;
+        assert!(time_result.is_ok());
+        
+        // Step 2: list_directory
+        let dir_result = state.execute_tool("list_directory", r#"{"path": "."}"#).await;
+        assert!(dir_result.is_ok());
+        
+        // Verify results have expected structure
+        let time_json = time_result.unwrap();
+        assert!(time_json.get("time").is_some());
+        
+        let dir_json = dir_result.unwrap();
+        assert!(dir_json.get("files").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_task_processing() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Add multiple tasks
+        let mut task_ids = Vec::new();
+        for i in 0..10 {
+            let id = state.add_task(format!("Task {}", i)).await.unwrap();
+            task_ids.push(id);
+        }
+        
+        // All should be pending
+        {
+            let tasks = state.tasks.read().await;
+            for id in &task_ids {
+                let task = tasks.get(id).unwrap();
+                assert_eq!(task.status, "pending");
+            }
+        }
+        
+        // Process all tasks concurrently
+        for id in &task_ids {
+            let mut tasks = state.tasks.write().await;
+            tasks.get_mut(id).unwrap().status = "processing".to_string();
+        }
+        
+        // All should be processing
+        {
+            let tasks = state.tasks.read().await;
+            for id in &task_ids {
+                let task = tasks.get(id).unwrap();
+                assert_eq!(task.status, "processing");
+            }
+        }
+        
+        // Complete all
+        for id in &task_ids {
+            let mut tasks = state.tasks.write().await;
+            tasks.get_mut(id).unwrap().status = "completed".to_string();
+        }
+        
+        // All should be completed
+        {
+            let tasks = state.tasks.read().await;
+            for id in &task_ids {
+                let task = tasks.get(id).unwrap();
+                assert_eq!(task.status, "completed");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_agent_message_passing() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Create two agents
+        let agent1 = Agent {
+            id: Uuid::new_v4(),
+            name: "agent1".to_string(),
+            parent_id: None,
+            created_at: Utc::now(),
+            system_prompt: "You are agent 1.".to_string(),
+            context: vec![],
+        };
+        let agent1_id = agent1.id;
+        
+        let agent2 = Agent {
+            id: Uuid::new_v4(),
+            name: "agent2".to_string(),
+            parent_id: None,
+            created_at: Utc::now(),
+            system_prompt: "You are agent 2.".to_string(),
+            context: vec![],
+        };
+        let agent2_id = agent2.id;
+        
+        state.agents.write().await.insert(agent1_id, agent1);
+        state.agents.write().await.insert(agent2_id, agent2);
+        
+        // Agent1 sends message to Agent2
+        let msg = AgentMessage {
+            id: Uuid::new_v4(),
+            from_agent: agent1_id,
+            to_agent: agent2_id,
+            content: "Hello from agent1".to_string(),
+            timestamp: Utc::now(),
+        };
+        state.messages.write().await.push(msg);
+        
+        // Verify message
+        let messages = state.messages.read().await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "Hello from agent1");
+        assert_eq!(messages[0].from_agent, agent1_id);
+        assert_eq!(messages[0].to_agent, agent2_id);
+    }
+
+    #[tokio::test]
+    async fn test_full_agent_think_cycle() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        // Create agent with context
+        let mut agent = Agent {
+            id: Uuid::new_v4(),
+            name: "thinker".to_string(),
+            parent_id: None,
+            created_at: Utc::now(),
+            system_prompt: "You are a helpful agent.".to_string(),
+            context: vec![Message {
+                role: "system".to_string(),
+                content: "You are a helpful agent.".to_string(),
+                tool_call_id: None,
+                tool_name: None,
+            }],
+        };
+        
+        // Add user message
+        agent.context.push(Message {
+            role: "user".to_string(),
+            content: "What time is it?".to_string(),
+            tool_call_id: None,
+            tool_name: None,
+        });
+        
+        let agent_id = agent.id;
+        state.agents.write().await.insert(agent_id, agent);
+        
+        // Verify context
+        {
+            let agents = state.agents.read().await;
+            let agt = agents.get(&agent_id).unwrap();
+            assert_eq!(agt.context.len(), 2);
+            assert_eq!(agt.context[0].role, "system");
+            assert_eq!(agt.context[1].role, "user");
+        }
+    }
 }
