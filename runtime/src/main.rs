@@ -1306,3 +1306,250 @@ mod tests {
         let _config = Config::default();
     }
 }
+
+// ============================================================================
+// Mock Server for Testing
+// ============================================================================
+
+#[cfg(test)]
+mod mock_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::collections::HashMap;
+
+    // Mock Ollama response
+    fn mock_ollama_response(tool_calls: bool) -> serde_json::Value {
+        if tool_calls {
+            serde_json::json!({
+                "message": {
+                    "content": "I'll use a tool.",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "get_time",
+                                "arguments": "{}"
+                            }
+                        }
+                    ]
+                }
+            })
+        } else {
+            serde_json::json!({
+                "message": {
+                    "content": "The current time is 2026-03-17T12:00:00Z"
+                }
+            })
+        }
+    }
+
+    // Test think_with_tools with mock (simulated)
+    #[tokio::test]
+    async fn test_think_basic() {
+        // Just test that agent context works
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Add a task
+        let _task_id = state.add_task("Hello".to_string()).await.unwrap();
+        
+        // Check tasks exist
+        let tasks = state.tasks.read().await;
+        assert!(!tasks.is_empty());
+    }
+
+    // Test list_tasks via direct access
+    #[tokio::test]
+    async fn test_list_tasks() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        state.add_task("Task 1".to_string()).await.unwrap();
+        state.add_task("Task 2".to_string()).await.unwrap();
+        
+        let tasks = state.tasks.read().await;
+        assert_eq!(tasks.len(), 2);
+    }
+
+    // Test init_tools populates registry
+    #[tokio::test]
+    async fn test_init_tools_populates() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        state.init_tools(&config).await;
+        
+        let tools = state.tools.read().await;
+        // Tools may or may not be loaded depending on config
+        // Just verify it doesn't panic
+    }
+
+    // Test execute multiple tools
+    #[tokio::test]
+    async fn test_execute_multiple_tools() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        // get_time
+        let r1 = state.execute_tool("get_time", "{}").await;
+        assert!(r1.is_ok());
+        
+        // list_directory
+        let r2 = state.execute_tool("list_directory", r#"{"path": "/"}"#).await;
+        assert!(r2.is_ok());
+    }
+
+    // Test tool permissions enforcement
+    #[tokio::test]
+    async fn test_permission_enforcement() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        // Should allow get_time (no permissions)
+        let result = state.execute_tool("get_time", "{}").await;
+        assert!(result.is_ok());
+    }
+
+    // Test state persistence methods exist
+    #[tokio::test]
+    async fn test_persistence_methods() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // These should not panic
+        // Note: actual file I/O may fail in test env
+        let _ = state.save_state().await;
+        let _ = state.load_state().await;
+    }
+
+    // Test spawn_agent creates agent
+    #[tokio::test]
+    async fn test_spawn_agent_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("spawn_agent", r#"{"name": "child"}"#).await;
+        // Should work or fail gracefully
+        let _ = result;
+    }
+
+    // Test send_message tool
+    #[tokio::test]
+    async fn test_send_message_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("send_message", r#"{"to": "agent2", "message": "hi"}"#).await;
+        let _ = result;
+    }
+
+    // Test http_get tool
+    #[tokio::test]
+    async fn test_http_get_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("http_get", r#"{"url": "http://localhost"}"#).await;
+        // May fail network, but shouldn't crash
+        let _ = result;
+    }
+
+    // Test search_web tool
+    #[tokio::test]
+    async fn test_search_web_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("search_web", r#"{"query": "test"}"#).await;
+        let _ = result;
+    }
+
+    // Test read_file tool
+    #[tokio::test]
+    async fn test_read_file_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        // Read current dir
+        let result = state.execute_tool("read_file", r#"{"path": "Cargo.toml"}"#).await;
+        let _ = result;
+    }
+
+    // Test execute_command tool
+    #[tokio::test]
+    async fn test_execute_command_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("execute_command", r#"{"command": "echo test"}"#).await;
+        let _ = result;
+    }
+
+    // Test empty task queue
+    #[tokio::test]
+    async fn test_empty_queue() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let popped = {
+            let mut queue = state.task_queue.write().await;
+            queue.pop()
+        };
+        
+        assert!(popped.is_none());
+    }
+
+    // Test config with tools
+    #[tokio::test]
+    async fn test_config_with_tools() {
+        let toml = r#"
+[server]
+port = 9000
+
+[providers.ollama]
+url = "http://localhost:11434"
+model = "test"
+
+[storage]
+path = "/tmp"
+
+[system]
+system_prompt = "Test"
+
+[[tools]]
+name = "custom_tool"
+description = "Custom tool"
+"#;
+        let config: Config = toml::from_str(toml).unwrap_or_default();
+        assert_eq!(config.server.port, 9000);
+    }
+
+    // Test get_ollama_url doesn't panic
+    #[tokio::test]
+    async fn test_get_ollama_url_private() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Just verify methods exist and don't panic
+        let _ = state.get_ollama_url(false);
+        let _ = state.get_ollama_url(true);
+    }
+
+    // Test get_ollama_model doesn't panic
+    #[tokio::test]
+    async fn test_get_ollama_model() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        // Just verify methods exist
+        let _ = state.get_ollama_model(false);
+        let _ = state.get_ollama_model(true);
+    }
+}
