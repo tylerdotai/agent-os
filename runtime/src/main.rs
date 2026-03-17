@@ -1234,3 +1234,75 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+// ============================================================================
+// Tests - Simple Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_time_tool() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("get_time", "{}").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_task() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let task_id = state.add_task("Test task".to_string()).await.unwrap();
+        assert!(!task_id.is_nil());
+    }
+
+    #[tokio::test]
+    async fn test_task_queue() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        state.add_task("Task 1".to_string()).await.unwrap();
+        state.add_task("Task 2".to_string()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_directory() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        state.init_tools(&config).await;
+        
+        let result = state.execute_tool("list_directory", r#"{"path": "."}"#).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_permission_check() {
+        let config = Config::default();
+        let state = AgentOsState::new(&config);
+        
+        let result = state.check_permission(&[]);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_client() {
+        let _client = McpClient::new(vec![]);
+    }
+
+    #[tokio::test]
+    async fn test_agent_exists() {
+        let config = Config::default();
+        let _state = AgentOsState::new(&config);
+    }
+
+    #[tokio::test]
+    async fn test_config() {
+        let _config = Config::default();
+    }
+}
