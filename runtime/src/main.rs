@@ -35,6 +35,8 @@ pub struct Config {
     pub tools: Vec<ToolConfig>,
     #[serde(default)]
     pub permissions: PermissionsConfig,
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -104,6 +106,80 @@ pub struct PermissionsConfig {
 }
 
 fn default_true() -> bool { true }
+
+
+// ============================================================================
+// MCP Client - Connect to External MCP Servers
+// ============================================================================
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct McpServerConfig {
+    pub url: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct McpClientConfig {
+    pub servers: Vec<McpServerConfig>,
+}
+
+pub struct McpClient {
+    pub servers: Vec<McpServerConfig>,
+}
+
+impl McpClient {
+    pub fn new(servers: Vec<McpServerConfig>) -> Self {
+        Self { servers }
+    }
+    
+    pub async fn list_tools(&self, server_url: &str) -> Result<Vec<Tool>> {
+        let client = reqwest::Client::new();
+        let resp = client.post(server_url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list"
+            }))
+            .send()
+            .await?;
+        
+        let result: serde_json::Value = resp.json().await?;
+        
+        let mut tools = Vec::new();
+        if let Some(tool_list) = result["result"]["tools"].as_array() {
+            for t in tool_list {
+                tools.push(Tool {
+                    name: format!("mcp:{}", t["name"].as_str().unwrap_or("")),
+                    description: t["description"].as_str().unwrap_or("").to_string(),
+                    parameters: Some(t["inputSchema"].clone()),
+                    permissions: vec!["network".to_string()],
+                });
+            }
+        }
+        
+        Ok(tools)
+    }
+    
+    pub async fn call_tool(&self, server_url: &str, tool_name: &str, args: serde_json::Value) -> Result<serde_json::Value> {
+        let client = reqwest::Client::new();
+        let resp = client.post(server_url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": args
+                }
+            }))
+            .send()
+            .await?;
+        
+        let result: serde_json::Value = resp.json().await?;
+        Ok(result["result"].clone())
+    }
+}
+
 
 fn load_config() -> Result<Config> {
     // Check for --config arg
@@ -193,6 +269,7 @@ pub struct AgentOsState {
     pub storage_path: PathBuf,
     pub running: Arc<std::sync::atomic::AtomicU64>,
     pub permissions: PermissionsConfig,
+    pub mcp_client: McpClient,
 }
 
 impl AgentOsState {
@@ -236,6 +313,7 @@ impl AgentOsState {
             storage_path: PathBuf::from(&config.storage.path),
             running: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             permissions: config.permissions.clone(),
+            mcp_client: McpClient::new(config.mcp_servers.clone()),
         }
     }
 
@@ -759,6 +837,76 @@ async fn mcp_add_task(State(state): State<Arc<AgentOsState>>, Json(req): Json<Mc
 }
 
 
+
+// ============================================================================
+// MCP Client - Discover and Add External Tools
+// ============================================================================
+
+async fn mcp_discover_tools(State(state): State<Arc<AgentOsState>>) -> Json<ApiResponse<usize>> {
+    let mut count = 0;
+    
+    for server in &state.mcp_client.servers {
+        match state.mcp_client.list_tools(&server.url).await {
+            Ok(tools) => {
+                let mut tool_store = state.tools.write().await;
+                for tool in tools {
+                    tool_store.insert(tool.name.clone(), tool);
+                    count += 1;
+                }
+                tracing::info!("Discovered {} tools from MCP server {}", count, server.name);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to connect to MCP server {}: {}", server.name, e);
+            }
+        }
+    }
+    
+    Json(ApiResponse {
+        success: true,
+        data: Some(count),
+        error: None,
+    })
+}
+
+// Endpoint to add MCP server at runtime
+#[derive(Deserialize)]
+struct AddMcpServerRequest {
+    name: String,
+    url: String,
+}
+
+async fn mcp_add_server(State(state): State<Arc<AgentOsState>>, Json(req): Json<AddMcpServerRequest>) -> Json<ApiResponse<String>> {
+    let server = McpServerConfig {
+        name: req.name.clone(),
+        url: req.url.clone(),
+    };
+    
+    // Try to connect and get tools
+    match state.mcp_client.list_tools(&req.url).await {
+        Ok(tools) => {
+            let tool_count = tools.len();
+            let mut tool_store = state.tools.write().await;
+            for tool in tools.into_iter() {
+                tool_store.insert(tool.name.clone(), tool);
+            }
+            tracing::info!("Added MCP server {} with {} tools", req.name, tool_count);
+            Json(ApiResponse {
+                success: true,
+                data: Some(format!("Added {} with {} tools", req.name, tool_count)),
+                error: None,
+            })
+        }
+        Err(e) => {
+            Json(ApiResponse {
+                success: false,
+                data: None,
+                error: Some(e.to_string()),
+            })
+        }
+    }
+}
+
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -777,6 +925,7 @@ async fn main() -> Result<()> {
             system: SystemConfig { system_prompt: "You are an autonomous AI agent.".to_string() },
             tools: vec![],
             permissions: PermissionsConfig { allow_spawn: true, allow_network: true, allow_filesystem: true, allow_execute: true },
+            mcp_servers: vec![],
         }
     });
     
@@ -811,6 +960,8 @@ async fn main() -> Result<()> {
         .route("/mcp/agents", get(mcp_list_agents))
         .route("/mcp/tasks", get(mcp_list_tasks))
         .route("/mcp/tasks", post(mcp_add_task))
+        .route("/mcp/discover", post(mcp_discover_tools))
+        .route("/mcp/servers", post(mcp_add_server))
         
         .with_state(state);
 

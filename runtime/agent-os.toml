@@ -71,3 +71,12 @@ allow_spawn = true
 allow_network = true
 allow_filesystem = true
 allow_execute = true
+
+# External MCP Servers
+[[mcp_servers]]
+name = "searxng"
+url = "http://192.168.0.247:18080/mcp"
+
+[[mcp_servers]]
+name = "qdrant"
+url = "http://192.168.0.247:6333/mcp"
