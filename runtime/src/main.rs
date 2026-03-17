@@ -28,6 +28,8 @@ pub struct Config {
     #[serde(default)]
     pub ollama: OllamaConfig,
     #[serde(default)]
+    pub cloud: CloudConfig,
+    #[serde(default)]
     pub storage: StorageConfig,
     #[serde(default)]
     pub system: SystemConfig,
@@ -49,6 +51,16 @@ pub struct ServerConfig {
 
 fn default_host() -> String { "0.0.0.0".to_string() }
 fn default_port() -> u16 { 8080 }
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CloudConfig {
+    #[serde(default)]
+    pub api_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct OllamaConfig {
@@ -278,6 +290,9 @@ pub struct AgentOsState {
     pub running: Arc<std::sync::atomic::AtomicU64>,
     pub permissions: PermissionsConfig,
     pub mcp_client: McpClient,
+    pub cloud_api_url: Option<String>,
+    pub cloud_api_key: Option<String>,
+    pub cloud_model: Option<String>,
 }
 
 impl AgentOsState {
@@ -413,6 +428,9 @@ impl AgentOsState {
             running: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             permissions: config.permissions.clone(),
             mcp_client: McpClient::new(config.mcp_servers.clone()),
+            cloud_api_url: config.cloud.api_url.clone(),
+            cloud_api_key: std::env::var("OPENAI_API_KEY").ok().or(config.cloud.api_key.clone()),
+            cloud_model: config.cloud.model.clone(),
         }
     }
 
@@ -1039,6 +1057,7 @@ async fn main() -> Result<()> {
         Config {
             server: ServerConfig { host: "0.0.0.0".to_string(), port: 8080 },
             ollama: OllamaConfig { url: "http://192.168.0.247:11434".to_string(), model: "qwen3.5:35b-a3b".to_string(), private_url: None, private_model: None, default_private: false },
+            cloud: CloudConfig { api_url: None, api_key: None, model: None },
             storage: StorageConfig { path: "/var/agent-os/storage".to_string() },
             system: SystemConfig { system_prompt: "You are an autonomous AI agent.".to_string() },
             tools: vec![],

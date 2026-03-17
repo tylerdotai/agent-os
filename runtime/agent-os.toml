@@ -6,9 +6,14 @@ port = 8080
 [ollama]
 url = "http://192.168.0.247:11434"
 model = "qwen3.5:35b-a3b"
-private_url = "http://192.168.0.247:11434"
-private_model = "qwen3.5:35b-a3b"
-default_private = false
+# provider: "ollama" (default), "openai", "anthropic"
+provider = "ollama"
+
+# For cloud APIs - leave empty to use Ollama
+[cloud]
+api_url = "https://api.openai.com/v1"
+api_key = ""  # Set OPENAI_API_KEY env var
+model = "gpt-4o"
 
 [storage]
 path = "/var/agent-os/storage"
