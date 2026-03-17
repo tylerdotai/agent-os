@@ -281,6 +281,15 @@ pub struct AgentOsState {
 }
 
 impl AgentOsState {
+
+    // Persistence stub - save/load tasks
+    pub async fn save_state(&self) -> Result<()> {
+        Ok(())
+    }
+    
+    pub async fn load_state(&self) -> Result<()> {
+        Ok(())
+    }
     pub fn new(config: &Config) -> Self {
         let system_prompt = config.system.system_prompt.clone();
 
@@ -965,6 +974,62 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(AgentOsState::new(&config));
     state.init_tools(&config).await;
+    // Start autonomous task processing loop
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            
+            // Get next task
+            let task_id = {
+                let mut queue = state_clone.task_queue.write().await;
+                queue.pop()
+            };
+            
+            if let Some(tid) = task_id {
+                tracing::info!("Auto-processing task {}", tid);
+                
+                // Update status
+                {
+                    let mut tasks = state_clone.tasks.write().await;
+                    if let Some(task) = tasks.get_mut(&tid) {
+                        task.status = "processing".to_string();
+                    }
+                }
+                
+                // Get description
+                let description = {
+                    let tasks = state_clone.tasks.read().await;
+                    tasks.get(&tid).map(|t| t.description.clone())
+                };
+                
+                if let Some(desc) = description {
+                    // Get init agent
+                    let agent_id = {
+                        let agents = state_clone.agents.read().await;
+                        agents.keys().next().cloned()
+                    };
+                    
+                    if let Some(aid) = agent_id {
+                        match state_clone.think_with_tools(aid, &desc, 10, false).await {
+                            Ok(result) => {
+                                let mut tasks = state_clone.tasks.write().await;
+                                if let Some(task) = tasks.get_mut(&tid) {
+                                    task.status = "completed".to_string();
+                                    task.result = Some(result);
+                                    task.completed_at = Some(chrono::Utc::now());
+                                }
+                                // Save state after completion
+                                if let Err(e) = state_clone.save_state().await {
+                                    tracing::warn!("Failed to save state: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
