@@ -1,7 +1,7 @@
 //! Agent OS - Operating System for Autonomous AI Agents
 //!
 //! Built for agents to consume programmatically.
-//! Configurable via YAML: cargo run -- --config agent-os.yml
+//! Configurable via YAML: cargo run -- --config agent-os.toml
 
 use anyhow::Result;
 use axum::{
@@ -9,7 +9,6 @@ use axum::{
     Router, Json,
     extract::State,
 };
-use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,7 +21,7 @@ use chrono::{DateTime, Utc};
 // Configuration
 // ============================================================================
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
@@ -38,7 +37,7 @@ pub struct Config {
     pub permissions: PermissionsConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
@@ -49,7 +48,7 @@ pub struct ServerConfig {
 fn default_host() -> String { "0.0.0.0".to_string() }
 fn default_port() -> u16 { 8080 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct OllamaConfig {
     #[serde(default = "default_ollama_url")]
     pub url: String,
@@ -60,7 +59,7 @@ pub struct OllamaConfig {
 fn default_ollama_url() -> String { "http://192.168.0.247:11434".to_string() }
 fn default_model() -> String { "qwen3.5:35b-a3b".to_string() }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct StorageConfig {
     #[serde(default = "default_storage_path")]
     pub path: String,
@@ -68,7 +67,7 @@ pub struct StorageConfig {
 
 fn default_storage_path() -> String { "/var/agent-os/storage".to_string() }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct SystemConfig {
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
@@ -78,18 +77,19 @@ fn default_system_prompt() -> String {
     "You are an autonomous AI agent. Complete tasks using tools.\nWhen done, output: TASK_COMPLETE: <result>".to_string() 
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ToolConfig {
     pub name: String,
     pub description: String,
     #[serde(default = "default_handler")]
     pub handler: String,
-    pub parameters: serde_json::Value,
+    #[serde(default)]
+    pub parameters: Option<serde_json::Value>,
 }
 
 fn default_handler() -> String { "builtin".to_string() }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct PermissionsConfig {
     #[serde(default = "default_true")]
     pub allow_spawn: bool,
@@ -103,11 +103,27 @@ pub struct PermissionsConfig {
 
 fn default_true() -> bool { true }
 
-#[derive(Parser, Debug)]
-#[command(name = "agent-os")]
-pub struct Args {
-    #[arg(short, long, default_value = "agent-os.yml")]
-    pub config: String,
+fn load_config() -> Result<Config> {
+    // Check for --config arg
+    let args: Vec<String> = std::env::args().collect();
+    let config_path = args.iter()
+        .position(|a| a == "--config")
+        .and_then(|i| args.get(i + 1))
+        .unwrap_or(&"agent-os.toml".to_string())
+        .clone();
+    
+    let content = std::fs::read_to_string(&config_path)?;
+    let mut config: Config = toml::from_str(&content)?;
+    
+    // Allow env var overrides
+    if let Ok(url) = std::env::var("OLLAMA_URL") {
+        config.ollama.url = url;
+    }
+    if let Ok(model) = std::env::var("MODEL") {
+        config.ollama.model = model;
+    }
+    
+    Ok(config)
 }
 
 // ============================================================================
@@ -136,7 +152,7 @@ pub struct Message {
 pub struct Tool {
     pub name: String,
     pub description: String,
-    pub parameters: serde_json::Value,
+    pub parameters: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -566,13 +582,19 @@ async fn root() -> Json<ApiResponse<String>> {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let args = Args::parse();
+    // Load config from YAML (or use defaults)
+    let config = load_config().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load config: {}, using defaults", e);
+        Config {
+            server: ServerConfig { host: "0.0.0.0".to_string(), port: 8080 },
+            ollama: OllamaConfig { url: "http://192.168.0.247:11434".to_string(), model: "qwen3.5:35b-a3b".to_string() },
+            storage: StorageConfig { path: "/var/agent-os/storage".to_string() },
+            system: SystemConfig { system_prompt: "You are an autonomous AI agent.".to_string() },
+            tools: vec![],
+            permissions: PermissionsConfig { allow_spawn: true, allow_network: true, allow_filesystem: true, allow_execute: true },
+        }
+    });
     
-    // Load config
-    let config_content = std::fs::read_to_string(&args.config)?;
-    let config: Config = serde_yaml::from_str(&config_content)?;
-    
-    tracing::info!("Loaded config from {}", args.config);
     tracing::info!("Ollama: {} ({})", config.ollama.url, config.ollama.model);
     tracing::info!("Tools: {}", config.tools.len());
 
