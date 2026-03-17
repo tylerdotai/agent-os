@@ -29,6 +29,19 @@ An operating system for autonomous AI agents that receives tasks, completes them
 - Task management (add, list, get next)
 - Tool execution
 
+### 6. MCP Server (EXISTING)
+- JSON-RPC 2.0 endpoint
+- Expose tools as MCP
+- External tools can connect
+
+### 7. Tool Permissions (EXISTING)
+- Per-tool permission categories: network, filesystem, execute, spawn
+- Global permission settings
+
+### 8. Private Inference (EXISTING)
+- Route sensitive tasks to local models
+- Separate public/private Ollama endpoints
+
 ## Non-Functional Requirements
 
 ### Performance
@@ -39,11 +52,6 @@ An operating system for autonomous AI agents that receives tasks, completes them
 - Auto-restart on crash
 - Log errors to file
 
-### Security
-- Tool permissions (deny-by-default)
-
 ## Out of Scope (v1)
-- MCP server (nice to have)
-- Per-agent permissions
 - Multi-node deployment
 - Bare metal kernel

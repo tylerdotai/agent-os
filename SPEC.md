@@ -9,6 +9,8 @@ A system that runs autonomous agents which receive tasks, use tools to complete 
 2. **As a user**, I can see the status of my tasks (pending, completed, failed)
 3. **As an agent**, I can use tools (read files, run commands, search web) to complete tasks
 4. **As a system**, I persist agent state so it remembers past tasks
+5. **As a system**, I expose tools via MCP protocol
+6. **As a user**, I can restrict which tools an agent can use
 
 ## API Specification
 
@@ -24,6 +26,16 @@ A system that runs autonomous agents which receive tasks, use tools to complete 
 | POST | /process | Process pending tasks (manual) |
 | GET | /agents | List agents |
 | POST | /agents | Spawn agent |
+| GET | /tools | List tools |
+| POST | /execute | Execute tool |
+
+### MCP Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /mcp/tools | List tools (MCP format) |
+| POST | /mcp/execute | Execute tool (JSON-RPC 2.0) |
+| POST | /mcp/servers | Add external MCP server |
 
 ### Data Models
 
@@ -45,9 +57,10 @@ Agent {
   context: Message[]
 }
 
-Message {
-  role: "system" | "user" | "assistant" | "tool"
-  content: string
+Tool {
+  name: string
+  description: string
+  permissions: string[]  // network, filesystem, execute, spawn
 }
 ```
 
@@ -56,14 +69,19 @@ Message {
 All configuration via TOML file:
 - Server port
 - Ollama URL and model
+- Private inference settings
 - Tool definitions
 - Permission settings
+- External MCP servers
 
 ## Acceptance Criteria
 
-- [ ] Can add task to queue
-- [ ] Can process task using LLM + tools
-- [ ] Task status updates correctly
+- [x] Can add task to queue
+- [x] Can process task using LLM + tools
+- [x] Task status updates correctly
 - [ ] Agent persists across restarts
-- [ ] Health endpoint responds
-- [ ] Core tools work (get_time, list_directory)
+- [x] Health endpoint responds
+- [x] Core tools work (get_time, list_directory)
+- [x] MCP server endpoint responds
+- [x] Tool permissions work
+- [x] Private inference routing works
