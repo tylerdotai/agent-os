@@ -1890,19 +1890,22 @@ mod more_tests {
         let config = Config::default();
         let state = AgentOsState::new(&config);
         
+        let agent1 = Uuid::new_v4();
+        let agent2 = Uuid::new_v4();
+        
         // Add messages
         let msg1 = AgentMessage {
-            role: "user".to_string(),
+            id: Uuid::new_v4(),
+            from_agent: agent1,
+            to_agent: agent2,
             content: "Hello".to_string(),
-            agent_id: Some(Uuid::new_v4()),
-            task_id: Some(Uuid::new_v4()),
             timestamp: Utc::now(),
         };
         let msg2 = AgentMessage {
-            role: "assistant".to_string(),
+            id: Uuid::new_v4(),
+            from_agent: agent2,
+            to_agent: agent1,
             content: "Hi there".to_string(),
-            agent_id: msg1.agent_id,
-            task_id: msg1.task_id,
             timestamp: Utc::now(),
         };
         
@@ -1912,8 +1915,8 @@ mod more_tests {
         // List messages
         let messages = state.messages.read().await;
         assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[0].content, "Hello");
+        assert_eq!(messages[1].content, "Hi there");
     }
 
     #[tokio::test]
