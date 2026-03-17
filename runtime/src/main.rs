@@ -501,10 +501,43 @@ impl AgentOsState {
                 "stream": false
             });
             
-            let response = client.post(format!("{}/api/chat", self.get_ollama_url(private)))
-                .json(&request).send().await?;
+            // Check if cloud API is configured
+            let use_cloud = self.cloud_api_url.is_some() && self.cloud_api_key.is_some();
             
-            let result = response.json::<serde_json::Value>().await?;
+            let result = if use_cloud {
+                // Use cloud API (OpenAI-compatible)
+                let url = self.cloud_api_url.as_ref().unwrap();
+                let model = self.cloud_model.as_deref().unwrap_or("gpt-4o");
+                let api_key = self.cloud_api_key.as_ref().unwrap();
+                
+                let cloud_request = serde_json::json!({
+                    "model": model,
+                    "messages": messages,
+                    "tools": tools_json,
+                });
+                
+                let resp = client.post(format!("{}/chat/completions", url))
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&cloud_request)
+                    .send()
+                    .await?;
+                
+                resp.json::<serde_json::Value>().await?
+            } else {
+                // Use Ollama
+                let request = serde_json::json!({
+                    "model": self.get_ollama_model(private),
+                    "messages": messages,
+                    "tools": tools_json,
+                    "stream": false
+                });
+                
+                let response = client.post(format!("{}/api/chat", self.get_ollama_url(private)))
+                    .json(&request).send().await?;
+                
+                response.json::<serde_json::Value>().await?
+            };
             let content = result["message"]["content"].as_str().unwrap_or("");
             let tool_calls_opt = result["message"]["tool_calls"].as_array();
 
