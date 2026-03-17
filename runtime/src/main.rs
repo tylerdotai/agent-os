@@ -85,6 +85,8 @@ pub struct ToolConfig {
     pub handler: String,
     #[serde(default)]
     pub parameters: Option<serde_json::Value>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
 }
 
 fn default_handler() -> String { "builtin".to_string() }
@@ -153,6 +155,7 @@ pub struct Tool {
     pub name: String,
     pub description: String,
     pub parameters: Option<serde_json::Value>,
+    pub permissions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +192,7 @@ pub struct AgentOsState {
     pub model: String,
     pub storage_path: PathBuf,
     pub running: Arc<std::sync::atomic::AtomicU64>,
+    pub permissions: PermissionsConfig,
 }
 
 impl AgentOsState {
@@ -231,6 +235,7 @@ impl AgentOsState {
             model: config.ollama.model.clone(),
             storage_path: PathBuf::from(&config.storage.path),
             running: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            permissions: config.permissions.clone(),
         }
     }
 
@@ -242,6 +247,7 @@ impl AgentOsState {
                 name: tool_config.name.clone(),
                 description: tool_config.description.clone(),
                 parameters: tool_config.parameters.clone(),
+                permissions: tool_config.permissions.clone(),
             });
             tracing::info!("Loaded tool: {}", tool_config.name);
         }
@@ -331,7 +337,35 @@ impl AgentOsState {
         Ok("Max turns reached".to_string())
     }
 
+    pub fn check_permission(&self, tool_permissions: &[String]) -> Result<()> {
+        for perm in tool_permissions {
+            match perm.as_str() {
+                "network" if !self.permissions.allow_network => {
+                    return Err(anyhow::anyhow!("Permission denied: network access not allowed"));
+                }
+                "filesystem" if !self.permissions.allow_filesystem => {
+                    return Err(anyhow::anyhow!("Permission denied: filesystem access not allowed"));
+                }
+                "execute" if !self.permissions.allow_execute => {
+                    return Err(anyhow::anyhow!("Permission denied: execute not allowed"));
+                }
+                "spawn" if !self.permissions.allow_spawn => {
+                    return Err(anyhow::anyhow!("Permission denied: spawn not allowed"));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     pub async fn execute_tool(&self, tool_name: &str, args: &str) -> Result<serde_json::Value> {
+        // Check tool permissions
+        let tool_perms = {
+            let tools = self.tools.read().await;
+            tools.get(tool_name).map(|t| t.permissions.clone()).unwrap_or_default()
+        };
+        self.check_permission(&tool_perms)?;
+        
         let params: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::json!({}));
         
         match tool_name {
