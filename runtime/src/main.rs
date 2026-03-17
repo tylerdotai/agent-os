@@ -1011,17 +1011,19 @@ async fn main() -> Result<()> {
                     };
                     
                     if let Some(aid) = agent_id {
-                        match state_clone.think_with_tools(aid, &desc, 10, false).await {
-                            Ok(result) => {
-                                let mut tasks = state_clone.tasks.write().await;
-                                if let Some(task) = tasks.get_mut(&tid) {
-                                    task.status = "completed".to_string();
-                                    task.result = Some(result);
-                                    task.completed_at = Some(chrono::Utc::now());
-                                }
-                                // Save state after completion
-                                if let Err(e) = state_clone.save_state().await {
-                                    tracing::warn!("Failed to save state: {}", e);
+                        let result = state_clone.think_with_tools(aid, &desc, 10, false).await;
+                        {
+                            let mut tasks = state_clone.tasks.write().await;
+                            if let Some(task) = tasks.get_mut(&tid) {
+                                match result {
+                                    Ok(r) => {
+                                        task.status = "completed".to_string();
+                                        task.result = Some(r);
+                                        task.completed_at = Some(chrono::Utc::now());
+                                    }
+                                    Err(_e) => {
+                                        task.status = "failed".to_string();
+                                    }
                                 }
                             }
                         }
