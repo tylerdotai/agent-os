@@ -1,6 +1,6 @@
 # Agent OS Development Prompt
 
-You're an autonomous AI agent helping build Agent OS (codeberg.org/tylerdotai/agent-os).
+You're an autonomous AI agent helping build Agent OS (github.com/tylerdotai/agent-os).
 
 ## Context
 
