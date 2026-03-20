@@ -10,7 +10,7 @@
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
-  <a href="https://codeberg.org/tylerdotai/agent-os">
+  <a href="https://github.com/tylerdotai/agent-os">
     <img src="assets/IMG_7277.jpeg" alt="Agent OS Logo" width="120">
   </a>
 
@@ -19,12 +19,12 @@
   <p align="center">
     An operating system designed specifically for autonomous AI agents.
     <br />
-    <a href="https://codeberg.org/tylerdotai/agent-os"><strong>Explore the docs »</strong></a>
+    <a href="https://github.com/tylerdotai/agent-os"><strong>Explore the docs »</strong></a>
     <br />
     <br />
-    <a href="https://codeberg.org/tylerdotai/agent-os/issues">Report Bug</a>
+    <a href="https://github.com/tylerdotai/agent-os/issues">Report Bug</a>
     ·
-    <a href="https://codeberg.org/tylerdotai/agent-os/issues">Request Feature</a>
+    <a href="https://github.com/tylerdotai/agent-os/issues">Request Feature</a>
   </p>
 </div>
 
@@ -101,7 +101,7 @@ Agent OS is a purpose-built operating system for autonomous AI agents. Unlike tr
 
 ```bash
 # Clone
-git clone git@codeberg.org:tylerdotai/agent-os.git
+git clone git@github.com:tylerdotai/agent-os.git
 cd agent-os/runtime
 
 # Build
@@ -235,12 +235,12 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 <!-- MARKDOWN LINKS -->
 [contributors-shield]: https://img.shields.io/badge/contributors-1-orange?style=for-the-badge
-[contributors-url]: https://codeberg.org/tylerdotai/agent-os/-/graphs/contributors
+[contributors-url]: https://github.com/tylerdotai/agent-os/-/graphs/contributors
 [forks-shield]: https://img.shields.io/badge/forks-1-black?style=for-the-badge
-[forks-url]: https://codeberg.org/tylerdotai/agent-os/-/forks
+[forks-url]: https://github.com/tylerdotai/agent-os/-/forks
 [stars-shield]: https://img.shields.io/badge/stars-1-black?style=for-the-badge
-[stars-url]: https://codeberg.org/tylerdotai/agent-os
+[stars-url]: https://github.com/tylerdotai/agent-os
 [issues-shield]: https://img.shields.io/badge/issues-1-black?style=for-the-badge
-[issues-shield-url]: https://codeberg.org/tylerdotai/agent-os/issues
+[issues-shield-url]: https://github.com/tylerdotai/agent-os/issues
 [license-shield]: https://img.shields.io/badge/license-MIT-black?style=for-the-badge
-[license-url]: https://codeberg.org/tylerdotai/agent-os/blob/main/LICENSE
+[license-url]: https://github.com/tylerdotai/agent-os/blob/main/LICENSE
